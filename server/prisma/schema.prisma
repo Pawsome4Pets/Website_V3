@@ -1,0 +1,279 @@
+// Pawsome 4 Pets — form builder platform schema.
+// Models map to the 12 tables in the build plan.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Local dev runs on SQLite for zero-config. When deploying to Afrihost
+  // MySQL, change this to "mysql" and re-add the @db.Text annotations
+  // listed in DEPLOY-NOTES (description, successMessage, options, validation,
+  // SubmissionAnswer.value, ActivityLog.metadata, Setting.value).
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth & identity ──────────────────────────────────────────────────────────
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  surname      String?
+  phone        String?
+  isActive     Boolean  @default(true) @map("is_active")
+  isBanned     Boolean  @default(false) @map("is_banned")
+  banReason    String?  @map("ban_reason")
+  emailVerified Boolean @default(false) @map("email_verified")
+  roleId       Int?     @map("role_id")
+  role         Role?    @relation(fields: [roleId], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  submissions  FormSubmission[]
+  activityLogs ActivityLog[]
+  dogs         Dog[]
+
+  @@index([roleId])
+  @@map("users")
+}
+
+model AdminUser {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  isActive     Boolean  @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  roleId       Int?     @map("role_id")
+  role         Role?    @relation("AdminRole", fields: [roleId], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  forms        Form[]
+  activityLogs ActivityLog[] @relation("AdminActivity")
+
+  @@index([roleId])
+  @@map("admin_users")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  adminUsers  AdminUser[]  @relation("AdminRole")
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int        @map("role_id")
+  permissionId Int        @map("permission_id")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ─── Forms ────────────────────────────────────────────────────────────────────
+
+model Form {
+  id             Int      @id @default(autoincrement())
+  slug           String   @unique
+  title          String
+  description    String?
+  isPublished    Boolean  @default(false) @map("is_published")
+  createsAccount Boolean  @default(false) @map("creates_account")
+  successMessage String?  @map("success_message")
+  createdById    Int?     @map("created_by_id")
+  createdBy      AdminUser? @relation(fields: [createdById], references: [id])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  fields         FormField[]
+  submissions    FormSubmission[]
+
+  @@index([createdById])
+  @@map("forms")
+}
+
+model FormField {
+  id           Int      @id @default(autoincrement())
+  formId       Int      @map("form_id")
+  form         Form     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  fieldKey     String   @map("field_key")
+  label        String
+  type         String
+  placeholder  String?
+  helpText     String?  @map("help_text")
+  isRequired   Boolean  @default(false) @map("is_required")
+  position     Int      @default(0)
+  options      String?  // JSON-encoded
+  validation   String?  // JSON-encoded
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  conditions   FieldCondition[]
+  answers      SubmissionAnswer[]
+
+  @@unique([formId, fieldKey])
+  @@index([formId])
+  @@map("form_fields")
+}
+
+model FieldCondition {
+  id            Int       @id @default(autoincrement())
+  fieldId       Int       @map("field_id")
+  field         FormField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  dependsOnKey  String    @map("depends_on_key")
+  operator      String
+  value         String
+  action        String
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([fieldId])
+  @@map("field_conditions")
+}
+
+// ─── Submissions ──────────────────────────────────────────────────────────────
+
+model FormSubmission {
+  id           Int      @id @default(autoincrement())
+  formId       Int      @map("form_id")
+  form         Form     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  userId       Int?     @map("user_id")
+  user         User?    @relation(fields: [userId], references: [id])
+  status       String   @default("submitted")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  answers      SubmissionAnswer[]
+  fileUploads  FileUpload[]
+
+  @@index([formId])
+  @@index([userId])
+  @@index([status])
+  @@map("form_submissions")
+}
+
+model SubmissionAnswer {
+  id            Int            @id @default(autoincrement())
+  submissionId  Int            @map("submission_id")
+  submission    FormSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  fieldId       Int            @map("field_id")
+  field         FormField      @relation(fields: [fieldId], references: [id])
+  value         String?
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  @@index([submissionId])
+  @@index([fieldId])
+  @@map("submission_answers")
+}
+
+model FileUpload {
+  id            Int             @id @default(autoincrement())
+  submissionId  Int?            @map("submission_id")
+  submission    FormSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  fieldKey      String?         @map("field_key")
+  originalName  String          @map("original_name")
+  storagePath   String          @map("storage_path")
+  mimeType      String          @map("mime_type")
+  sizeBytes     Int             @map("size_bytes")
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  @@index([submissionId])
+  @@map("file_uploads")
+}
+
+// ─── Operations ───────────────────────────────────────────────────────────────
+
+model ActivityLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int?     @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  adminId     Int?     @map("admin_id")
+  admin       AdminUser? @relation("AdminActivity", fields: [adminId], references: [id])
+  action      String
+  entityType  String?  @map("entity_type")
+  entityId    Int?     @map("entity_id")
+  metadata    String?  // JSON-encoded
+  ipAddress   String?  @map("ip_address")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+// ─── User profile: dogs ──────────────────────────────────────────────────────
+// Soft-delete by setting isActive=false + removalReason so the audit trail
+// is preserved.
+
+model Dog {
+  id            Int       @id @default(autoincrement())
+  userId        Int       @map("user_id")
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  breed         String?
+  birthDate     DateTime? @map("birth_date")
+  sex           String?           // 'male' | 'female'
+  isSterilized  Boolean?  @map("is_sterilized")  // spayed/neutered
+  notes         String?
+  isActive      Boolean   @default(true) @map("is_active")
+  removedAt     DateTime? @map("removed_at")
+  removalReason String?   @map("removal_reason")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("dogs")
+}
+
+// ─── Password reset tokens ──────────────────────────────────────────────────
+// One row per outstanding reset request. tokenHash stores a SHA-256 of the
+// raw token so leaks of the table alone can't be used to reset accounts.
+
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userKind  String    @map("user_kind")  // 'user' or 'admin'
+  subjectId Int       @map("subject_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([subjectId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}

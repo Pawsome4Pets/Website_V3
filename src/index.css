@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  /* Hide native cursor when the custom cursor is active (fine pointer only) */
+  html.no-native-cursor,
+  html.no-native-cursor * {
+    cursor: none !important;
+  }
+  body {
+    @apply bg-cream text-charcoal font-sans antialiased;
+  }
+  ::selection {
+    @apply bg-gold/30 text-charcoal;
+  }
+  /* Slim, warm scrollbar */
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-track { @apply bg-sand; }
+  ::-webkit-scrollbar-thumb { @apply bg-beige rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-gold; }
+}
+
+@layer components {
+  /* Layout container */
+  .container-px { @apply mx-auto w-full max-w-6xl px-6 sm:px-8; }
+
+  /* Section spacing */
+  .section { @apply py-20 sm:py-28; }
+
+  /* Display heading */
+  .h-display { @apply font-serif font-light tracking-tight leading-[1.05]; }
+
+  /* Eyebrow label */
+  .eyebrow {
+    @apply inline-block text-xs font-semibold uppercase tracking-[0.25em] text-coral;
+  }
+
+  /* Glassmorphism card */
+  .glass {
+    @apply rounded-2xl border border-white/40 bg-white/40 backdrop-blur-md shadow-glass;
+  }
+}

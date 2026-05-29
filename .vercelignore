@@ -1,0 +1,16 @@
+node_modules
+server/node_modules
+.git
+dist
+dist-ssr
+uploads
+server/uploads
+server/prisma/dev.db
+server/prisma/dev.db-journal
+*.log
+.env
+.env.local
+.env.development
+.env.production
+.vercel
+README.md

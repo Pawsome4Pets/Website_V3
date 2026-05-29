@@ -1,0 +1,23 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+# Env files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Local uploads (handled by Vercel Blob in production)
+uploads/
+server/uploads/
+
+# Vercel local cache
+.vercel
+
+# Local Prisma SQLite dev DB
+server/prisma/dev.db
+server/prisma/dev.db-journal

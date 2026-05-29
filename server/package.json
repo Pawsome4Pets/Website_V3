@@ -1,0 +1,52 @@
+{
+  "name": "pawsome4pets-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend API for Pawsome 4 Pets — auth, forms, submissions.",
+  "scripts": {
+    "predev": "prisma generate",
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "seed": "node prisma/seed.js",
+    "mailtest": "node scripts/mailtest.js",
+    "prod:generate": "prisma generate --schema=./prisma/schema.prod.prisma",
+    "preprod:seed": "npm run prod:generate",
+    "preprod:start": "npm run prod:generate",
+    "prod:push": "dotenv -e .env.production -- prisma db push --schema=./prisma/schema.prod.prisma",
+    "prod:migrate": "dotenv -e .env.production -- prisma migrate dev --schema=./prisma/schema.prod.prisma",
+    "prod:deploy": "dotenv -e .env.production -- prisma migrate deploy --schema=./prisma/schema.prod.prisma",
+    "prod:studio": "dotenv -e .env.production -- prisma studio --schema=./prisma/schema.prod.prisma",
+    "prod:seed": "dotenv -e .env.production -- node prisma/seed.js",
+    "prod:start": "dotenv -e .env.production -- node src/index.js",
+    "prod:dbtest": "dotenv -e .env.production -- node scripts/dbtest.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@vercel/blob": "^0.27.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-rate-limit": "^7.4.1",
+    "express-validator": "^7.2.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^8.0.9",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0",
+    "mysql2": "^3.22.4",
+    "prisma": "^5.22.0"
+  }
+}
