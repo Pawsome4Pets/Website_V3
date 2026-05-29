@@ -434,20 +434,25 @@ const STOPWORDS = new Set([
   'pawsome4pets', 'pawsome', 'pets', 'doghotel', 'spa', 'newclient', 'application', 'form',
 ]);
 
-// Token-overlap match. Score = |intersection| / max(|col tokens|, 1).
-// Only returns a match if the best score is > threshold.
-function tokenOverlapMatch(colTokens, formFields, threshold = 0.6) {
+// Token-overlap match. Score = |intersection| / max(|col tokens|, |field tokens|).
+// Only returns a match if the best score is > threshold. Picks the highest
+// scorer, breaking ties by field-tokens count (prefers more specific matches).
+function tokenOverlapMatch(colTokens, formFields, threshold = 0.45) {
   if (colTokens.length === 0) return null;
   const colSet = new Set(colTokens);
   let best = null;
   let bestScore = 0;
+  let bestFieldTokens = Infinity;
   for (const f of formFields) {
     const fieldTokens = new Set([...tokens(f.label), ...tokens(f.fieldKey)]);
     if (fieldTokens.size === 0) continue;
     let hits = 0;
     for (const t of colSet) if (fieldTokens.has(t)) hits++;
+    if (hits === 0) continue;
     const score = hits / Math.max(colSet.size, fieldTokens.size);
-    if (score > bestScore) { bestScore = score; best = f; }
+    if (score > bestScore || (score === bestScore && fieldTokens.size < bestFieldTokens)) {
+      bestScore = score; best = f; bestFieldTokens = fieldTokens.size;
+    }
   }
   return bestScore >= threshold ? best : null;
 }

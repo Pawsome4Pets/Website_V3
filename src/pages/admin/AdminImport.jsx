@@ -55,12 +55,11 @@ export default function AdminImport() {
     const m = autoMapColumns(parsed.columns, formDetail.fields);
     setMapping(m);
 
-    // Auto-fire the import if the toggle is on and we mapped at least one
-    // column. Guards against re-triggering across renders.
-    const mapped = Object.values(m).filter(Boolean).length;
-    if (autoImport && mapped > 0 && !autoTriggered && !importing) {
+    // Auto-fire the import as soon as we have a mapping. If 0 columns mapped
+    // the runImport call will surface a clear error message at the top of the
+    // page instead of silently doing nothing.
+    if (autoImport && !autoTriggered && !importing) {
       setAutoTriggered(true);
-      // Defer one tick so React commits the mapping state first.
       setTimeout(() => runImport(m), 0);
     }
   }, [parsed, formDetail]);
