@@ -261,6 +261,30 @@ export default function AdminImport() {
         </Card>
       </div>
 
+      {parsed && formDetail && mappedCount === 0 && (
+        <div className="mt-6">
+          <Card title="⚠️ Diagnostic — no columns auto-mapped">
+            <p className="text-sm text-cocoa">
+              Below are the column names found in your file and the form's field labels.
+              Paste this whole block back if you'd like me to write a manual mapping.
+            </p>
+            <textarea
+              readOnly
+              className="mt-3 w-full rounded-xl border border-beige bg-white/70 px-3 py-2 font-mono text-[11px] text-charcoal"
+              rows={12}
+              value={JSON.stringify({
+                fileColumns: parsed.columns,
+                ignoredMeta: parsed.ignoredMetaColumns,
+                formFieldLabels: formDetail.fields
+                  .filter((f) => !['section', 'subheading', 'paragraph'].includes(f.type))
+                  .map((f) => `${f.fieldKey} (${f.label})`),
+              }, null, 2)}
+              onFocus={(e) => e.target.select()}
+            />
+          </Card>
+        </div>
+      )}
+
       {parsed && formDetail && (
         <div className="mt-6">
           <Card

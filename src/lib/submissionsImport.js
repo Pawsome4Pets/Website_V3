@@ -73,19 +73,27 @@ function readSheet(workbook, sheetName) {
   return { name: sheetName, columns, rows };
 }
 
-// Candidate FK column names Cognito uses. First match wins.
-const FK_CANDIDATES = ['Number', 'Entry', 'Entry Number', 'Entry Id', 'Id', 'Submission Id'];
-
+// Find the foreign-key column in a child sheet — any column whose lower-case
+// name also appears in the main sheet. Prefer columns that look ID-like
+// (ending in _Id, or named "Number", "Entry", etc.) since Cognito uses many
+// different naming patterns for the link column.
 function pickForeignKey(childCols, mainCols) {
-  const mainSet = new Set(mainCols.map((c) => c.toLowerCase()));
-  for (const candidate of FK_CANDIDATES) {
-    const lower = candidate.toLowerCase();
-    if (childCols.some((c) => c.toLowerCase() === lower) && mainSet.has(lower)) {
-      // Return the actual casing from the child sheet
-      return childCols.find((c) => c.toLowerCase() === lower);
-    }
-  }
-  return null;
+  const mainSet = new Map(mainCols.map((c) => [c.toLowerCase(), c]));
+  const intersect = childCols.filter((c) => mainSet.has(c.toLowerCase()));
+  if (intersect.length === 0) return null;
+  // Score each candidate: higher = more likely the FK.
+  const score = (c) => {
+    const lc = c.toLowerCase();
+    if (/^number$|^entry$|^entry number$|^id$|^submission id$/i.test(c)) return 100;
+    if (/_id$/i.test(c)) return 90;
+    if (/_number$/i.test(c)) return 80;
+    if (/entry/i.test(c)) return 70;
+    if (/number/i.test(c)) return 60;
+    if (/id$/i.test(c)) return 40;
+    return 1;
+  };
+  intersect.sort((a, b) => score(b) - score(a));
+  return intersect[0];
 }
 
 export function parseExcelSubmissions(buffer, opts = {}) {
