@@ -30,6 +30,64 @@ function isMetaColumn(label) {
 }
 
 // ─── Excel (.xlsx, .xls, .csv) ──────────────────────────────────────────────
+//
+// Cognito Forms exports repeating sections as ADDITIONAL SHEETS in the same
+// workbook. E.g. a form with "Owner" and "Dog" repeaters produces a workbook
+// like:
+//
+//   Sheet 1 "Entries"   — one row per submission. Columns include the scalar
+//                          fields and a "Number" column that uniquely IDs the
+//                          submission.
+//   Sheet 2 "Owner"     — one row per owner per submission, linked back to
+//                          the main entry by "Number" / "Entry" / similar.
+//   Sheet 3 "Dog"       — same pattern.
+//
+// We read the first sheet as the main rows, then for every other sheet we try
+// to find a foreign-key column that matches one in the main sheet. Matching
+// child rows are grouped by that key and injected as an array column onto the
+// main row, named after the child sheet. Result: the column "Owner" on the
+// import preview holds an array of owner records — exactly the shape our
+// `repeater` field type expects.
+
+function readSheet(workbook, sheetName) {
+  const raw = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    header: 1, defval: '', blankrows: false, raw: false,
+  });
+  if (raw.length < 2) return null;
+  const [headerRow, ...dataRows] = raw;
+  if (!headerRow.some((c) => String(c || '').trim().length > 0)) return null;
+
+  const columns = headerRow.map((c) => String(c || '').trim());
+  const rows = dataRows
+    .filter((r) => r.some((c) => String(c ?? '').trim().length > 0))
+    .map((r) => {
+      const obj = {};
+      for (let i = 0; i < columns.length; i++) {
+        if (!columns[i]) continue;
+        const v = r[i];
+        if (v === undefined || v === null || v === '') continue;
+        obj[columns[i]] = v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+      }
+      return obj;
+    });
+  return { name: sheetName, columns, rows };
+}
+
+// Candidate FK column names Cognito uses. First match wins.
+const FK_CANDIDATES = ['Number', 'Entry', 'Entry Number', 'Entry Id', 'Id', 'Submission Id'];
+
+function pickForeignKey(childCols, mainCols) {
+  const mainSet = new Set(mainCols.map((c) => c.toLowerCase()));
+  for (const candidate of FK_CANDIDATES) {
+    const lower = candidate.toLowerCase();
+    if (childCols.some((c) => c.toLowerCase() === lower) && mainSet.has(lower)) {
+      // Return the actual casing from the child sheet
+      return childCols.find((c) => c.toLowerCase() === lower);
+    }
+  }
+  return null;
+}
+
 export function parseExcelSubmissions(buffer, opts = {}) {
   let workbook;
   try {
@@ -39,55 +97,79 @@ export function parseExcelSubmissions(buffer, opts = {}) {
   }
   if (!workbook.SheetNames.length) throw new Error('The workbook has no sheets.');
 
-  // Use the first non-empty sheet.
-  let sheetName = workbook.SheetNames[0];
-  let raw = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
-    header: 1, defval: '', blankrows: false, raw: false,
-  });
-  if (raw.length < 2) {
-    for (const name of workbook.SheetNames) {
-      const r = XLSX.utils.sheet_to_json(workbook.Sheets[name], {
-        header: 1, defval: '', blankrows: false, raw: false,
-      });
-      if (r.length >= 2) { sheetName = name; raw = r; break; }
+  // Read every sheet. Skip ones that are header-only / empty.
+  const sheets = workbook.SheetNames
+    .map((n) => readSheet(workbook, n))
+    .filter(Boolean);
+  if (sheets.length === 0) throw new Error('No rows found in any sheet of the workbook.');
+
+  const main = sheets[0];
+  const childSheets = sheets.slice(1);
+  const sourceParts = [`${main.name}, ${main.rows.length} row${main.rows.length === 1 ? '' : 's'}`];
+
+  // Group each child sheet by its FK and attach as an array column to main rows.
+  const childAttachments = []; // [{ columnName, fk, byKey: Map<string, Array> }]
+  for (const child of childSheets) {
+    const fk = pickForeignKey(child.columns, main.columns);
+    if (!fk) {
+      sourceParts.push(`(${child.name} skipped — no matching key)`);
+      continue;
+    }
+    const byKey = new Map();
+    for (const row of child.rows) {
+      const k = String(row[fk] ?? '').trim();
+      if (!k) continue;
+      // Drop the FK from the stored row — keep only the real fields.
+      const { [fk]: _, ...rest } = row;
+      // Also drop sheet-level meta columns
+      const cleaned = {};
+      for (const [kk, vv] of Object.entries(rest)) {
+        if (isMetaColumn(kk)) continue;
+        cleaned[kk] = vv;
+      }
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(cleaned);
+    }
+    if (byKey.size > 0) {
+      childAttachments.push({ columnName: child.name, mainFk: fk, byKey });
+      sourceParts.push(`+ ${child.name} (${child.rows.length} sub-rows)`);
     }
   }
-  if (raw.length === 0) throw new Error('No rows found in the file.');
 
-  const [headerRow, ...dataRows] = raw;
-  if (!headerRow.some((c) => String(c || '').trim().length > 0)) {
-    throw new Error('First row of the sheet is empty — expected column headers.');
-  }
-
+  // Now build the output columns + rows from the main sheet, with child
+  // attachments injected.
   const columns = [];
   const ignoredMetaColumns = [];
-  const colIndex = []; // index into the raw row for each kept column
-  for (let i = 0; i < headerRow.length; i++) {
-    const label = String(headerRow[i] || '').trim();
-    if (!label) continue;
-    if (isMetaColumn(label)) { ignoredMetaColumns.push(label); continue; }
-    columns.push(label);
-    colIndex.push(i);
+  for (const c of main.columns) {
+    if (!c) continue;
+    if (isMetaColumn(c)) { ignoredMetaColumns.push(c); continue; }
+    columns.push(c);
+  }
+  // Append child columns (e.g. "Owner", "Dog") at the end of the column list.
+  for (const att of childAttachments) {
+    if (!columns.includes(att.columnName)) columns.push(att.columnName);
   }
 
-  const rows = dataRows
-    .filter((r) => r.some((c) => String(c ?? '').trim().length > 0))
-    .map((r) => {
-      const obj = {};
-      for (let i = 0; i < columns.length; i++) {
-        const raw = r[colIndex[i]];
-        if (raw === undefined || raw === null || raw === '') continue;
-        if (raw instanceof Date) obj[columns[i]] = raw.toISOString().slice(0, 10);
-        else obj[columns[i]] = String(raw);
-      }
-      return obj;
-    });
+  const rows = main.rows.map((mr) => {
+    const out = {};
+    for (const c of columns) {
+      if (childAttachments.find((a) => a.columnName === c)) continue; // attach below
+      if (mr[c] !== undefined) out[c] = mr[c];
+    }
+    for (const att of childAttachments) {
+      const fkValue = String(mr[att.mainFk] ?? '').trim();
+      if (!fkValue) continue;
+      const matches = att.byKey.get(fkValue);
+      if (matches && matches.length) out[att.columnName] = matches;
+    }
+    return out;
+  });
 
   return {
     columns,
     rows,
     ignoredMetaColumns,
-    sourceLabel: `${opts.fileName || 'workbook'} (${sheetName}, ${rows.length} row${rows.length === 1 ? '' : 's'})`,
+    sourceLabel: `${opts.fileName || 'workbook'} (${sourceParts.join(', ')})`,
   };
 }
 
