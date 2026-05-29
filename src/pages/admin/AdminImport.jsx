@@ -43,12 +43,25 @@ export default function AdminImport() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [importing, setImporting] = useState(false);
+  const [autoImport, setAutoImport] = useState(true);   // skip mapping review and import immediately
+  const [autoTriggered, setAutoTriggered] = useState(false);
 
   // Auto-build a default mapping once both the form's fields and a parsed file
-  // are available. The user can refine it before clicking Import.
+  // are available. The user can refine it before clicking Import (or let it
+  // auto-fire if `autoImport` is on).
   useEffect(() => {
     if (!parsed || !formDetail) return;
-    setMapping(autoMapColumns(parsed.columns, formDetail.fields));
+    const m = autoMapColumns(parsed.columns, formDetail.fields);
+    setMapping(m);
+
+    // Auto-fire the import if the toggle is on and we mapped at least one
+    // column. Guards against re-triggering across renders.
+    const mapped = Object.values(m).filter(Boolean).length;
+    if (autoImport && mapped > 0 && !autoTriggered && !importing) {
+      setAutoTriggered(true);
+      // Defer one tick so React commits the mapping state first.
+      setTimeout(() => runImport(m), 0);
+    }
   }, [parsed, formDetail]);
 
   const fieldOptions = useMemo(
@@ -91,14 +104,22 @@ export default function AdminImport() {
 
   const clearAll = () => {
     setFileName(''); setParsed(null); setMapping({});
-    setError(''); setSuccess('');
+    setError(''); setSuccess(''); setAutoTriggered(false);
   };
 
-  const runImport = async () => {
-    if (!formId || !parsed || mappedCount === 0) return;
+  // Accept an explicit mapping arg so the auto-fire path can pass the freshly
+  // computed mapping without waiting for the setState commit.
+  const runImport = async (mapOverride) => {
+    const mapToUse = mapOverride || mapping;
+    if (!formId || !parsed) return;
+    const localMappedCount = Object.values(mapToUse).filter(Boolean).length;
+    if (localMappedCount === 0) {
+      setError('No columns could be auto-mapped to fields. Turn off Auto-import and map manually.');
+      return;
+    }
     setImporting(true); setError(''); setSuccess('');
     try {
-      const rows = remapRows(parsed.rows, mapping).filter((r) => Object.keys(r).length > 0);
+      const rows = remapRows(parsed.rows, mapToUse).filter((r) => Object.keys(r).length > 0);
       if (rows.length === 0) {
         setError('No rows to import after mapping — make sure at least one column is mapped to a field.');
         setImporting(false);
@@ -109,8 +130,8 @@ export default function AdminImport() {
         body: { rows },
       });
       setSuccess(
-        `Imported ${result.created} submission${result.created === 1 ? '' : 's'} into "${formDetail.title}". ` +
-        `Skipped ${result.skipped}; ${result.answersCreated} answers stored.`,
+        `Imported ${result.created} submission${result.created === 1 ? '' : 's'} into "${formDetail.title}" ` +
+        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${result.answersCreated} answers stored, ${result.skipped} rows skipped).`,
       );
     } catch (err) {
       setError(err.message);
@@ -152,7 +173,7 @@ export default function AdminImport() {
             </span>
             <select
               value={formId}
-              onChange={(e) => { setFormId(e.target.value); setParsed(null); setMapping({}); setError(''); setSuccess(''); }}
+              onChange={(e) => { setFormId(e.target.value); setParsed(null); setMapping({}); setError(''); setSuccess(''); setAutoTriggered(false); }}
               className={`${inputCls} mt-1`}
             >
               <option value="">— select a form —</option>
@@ -180,18 +201,34 @@ export default function AdminImport() {
             Cognito Forms "Entries → Export" works for both formats as-is.
           </p>
 
+          <label className="mt-4 flex items-start gap-3 rounded-xl border border-beige bg-cream/40 p-4 text-sm text-charcoal">
+            <input
+              type="checkbox"
+              checked={autoImport}
+              onChange={(e) => { setAutoImport(e.target.checked); setAutoTriggered(false); }}
+              className="mt-0.5 h-4 w-4 accent-coral"
+            />
+            <span>
+              <span className="font-semibold">Auto-import after upload</span>
+              <span className="mt-1 block text-xs text-cocoa">
+                Skip the column-mapping review and import immediately using auto-matched fields.
+                Turn off if you want to verify the mapping first.
+              </span>
+            </span>
+          </label>
+
           <div className="mt-4">
-            <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm font-medium text-charcoal transition-colors hover:border-coral hover:text-coral ${!formId ? 'opacity-50 pointer-events-none' : ''}`}>
+            <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm font-medium text-charcoal transition-colors hover:border-coral hover:text-coral ${!formId || importing ? 'opacity-50 pointer-events-none' : ''}`}>
               <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
               </svg>
-              {fileName ? 'Choose another file' : 'Choose .xlsx or .json file'}
+              {importing ? 'Importing…' : (fileName ? 'Choose another file' : 'Choose .xlsx or .json file')}
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,.json,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                 onChange={onFile}
                 className="hidden"
-                disabled={!formId}
+                disabled={!formId || importing}
               />
             </label>
             {!formId && (
