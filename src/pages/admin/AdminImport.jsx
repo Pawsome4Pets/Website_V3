@@ -9,6 +9,7 @@ import {
   parseJsonSubmissions,
   autoMapColumns,
   remapRows,
+  findConsentFieldKeys,
 } from '../../lib/submissionsImport';
 
 const inputCls =
@@ -119,7 +120,19 @@ export default function AdminImport() {
     }
     setImporting(true); setError(''); setSuccess('');
     try {
-      const rows = remapRows(parsed.rows, mapToUse).filter((r) => Object.keys(r).length > 0);
+      let rows = remapRows(parsed.rows, mapToUse).filter((r) => Object.keys(r).length > 0);
+
+      // T&C / consent fields: original submitter already accepted these on
+      // the source platform, so auto-tick them on every imported row.
+      const consentKeys = findConsentFieldKeys(formDetail?.fields || []);
+      if (consentKeys.length) {
+        rows = rows.map((r) => {
+          const next = { ...r };
+          for (const k of consentKeys) if (next[k] == null) next[k] = 'Yes';
+          return next;
+        });
+      }
+
       if (rows.length === 0) {
         setError('No rows to import after mapping — make sure at least one column is mapped to a field.');
         setImporting(false);
@@ -129,9 +142,12 @@ export default function AdminImport() {
         method: 'POST',
         body: { rows },
       });
+      const consentNote = consentKeys.length
+        ? ` ${consentKeys.length} consent field${consentKeys.length === 1 ? '' : 's'} auto-checked.`
+        : '';
       setSuccess(
         `Imported ${result.created} submission${result.created === 1 ? '' : 's'} into "${formDetail.title}" ` +
-        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${result.answersCreated} answers stored, ${result.skipped} rows skipped).`,
+        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${result.answersCreated} answers stored, ${result.skipped} rows skipped).${consentNote}`,
       );
     } catch (err) {
       setError(err.message);

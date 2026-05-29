@@ -391,6 +391,67 @@ function fuzzy(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+// Cognito's Excel export prefixes every column with the form or section
+// internal name, e.g. "RainbowRequest_OwnersName_First" or
+// "Pawsome4PetsDogHotelSpa_Cellphone". We try the full column first, then
+// strip leading "SegmentName_" parts one by one and retry.
+function progressiveSuffixes(col) {
+  const out = [col];
+  const parts = col.split(/[_\.]/).filter(Boolean);
+  for (let i = 1; i < parts.length; i++) {
+    out.push(parts.slice(i).join('_'));
+    out.push(parts.slice(i).join(' '));
+  }
+  return out;
+}
+
+// Substring match in either direction — covers cases like
+// "OwnersName_First" → form field labelled "Owner First Name".
+function substringMatch(fuzzyCol, indexes) {
+  for (const [k, v] of indexes.fuzzy) {
+    if (!k) continue;
+    if (fuzzyCol.includes(k) || k.includes(fuzzyCol)) return v;
+  }
+  return null;
+}
+
+// Tokenise on case boundaries, underscores, spaces, numbers. Lowercase everything.
+function tokens(s) {
+  return String(s || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')   // camelCase boundary
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2') // acronym boundary
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((t) => singularise(t))
+    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
+}
+
+// Common filler words we shouldn't count toward overlap.
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with',
+  'your', 'my', 'our', 'is', 'are', 'do', 'does', 'has', 'have',
+  'rainbowrequest', 'rainbow', 'request',  // form-name prefixes
+  'pawsome4pets', 'pawsome', 'pets', 'doghotel', 'spa', 'newclient', 'application', 'form',
+]);
+
+// Token-overlap match. Score = |intersection| / max(|col tokens|, 1).
+// Only returns a match if the best score is > threshold.
+function tokenOverlapMatch(colTokens, formFields, threshold = 0.6) {
+  if (colTokens.length === 0) return null;
+  const colSet = new Set(colTokens);
+  let best = null;
+  let bestScore = 0;
+  for (const f of formFields) {
+    const fieldTokens = new Set([...tokens(f.label), ...tokens(f.fieldKey)]);
+    if (fieldTokens.size === 0) continue;
+    let hits = 0;
+    for (const t of colSet) if (fieldTokens.has(t)) hits++;
+    const score = hits / Math.max(colSet.size, fieldTokens.size);
+    if (score > bestScore) { bestScore = score; best = f; }
+  }
+  return bestScore >= threshold ? best : null;
+}
+
 export function autoMapColumns(columns, formFields) {
   const indexes = {
     keyExact: new Map(),
@@ -411,22 +472,44 @@ export function autoMapColumns(columns, formFields) {
     indexes.fuzzySingular.set(singularise(fuzzy(key)), f);
   }
 
-  const mapping = {};
-  for (const col of columns) {
-    const t = String(col || '').trim();
+  function findMatch(t) {
     const lo = t.toLowerCase();
     const fz = fuzzy(t);
     const fzs = singularise(fz);
-    const match = indexes.keyExact.get(t)
+    return indexes.keyExact.get(t)
       || indexes.keyLower.get(lo)
       || indexes.labelLower.get(lo)
       || indexes.fuzzy.get(fz)
       || indexes.fuzzy.get(fzs)
       || indexes.fuzzySingular.get(fz)
-      || indexes.fuzzySingular.get(fzs);
+      || indexes.fuzzySingular.get(fzs)
+      || (fz.length >= 5 ? substringMatch(fz, indexes) : null)
+      || tokenOverlapMatch(tokens(t), formFields);
+  }
+
+  const mapping = {};
+  for (const col of columns) {
+    const t = String(col || '').trim();
+    let match = null;
+    // Try the full column, then progressively shorter suffixes (strip Cognito
+    // section prefixes).
+    for (const candidate of progressiveSuffixes(t)) {
+      match = findMatch(candidate);
+      if (match) break;
+    }
     mapping[col] = match ? match.fieldKey : null;
   }
   return mapping;
+}
+
+// Detect form fields that look like consent / terms-and-conditions / agreement
+// checkboxes. These should be auto-checked for imported legacy submissions —
+// the original submitter already accepted T&C on the source platform.
+export function findConsentFieldKeys(formFields) {
+  const re = /(terms|condition|agree|consent|accept|acknowledg|i confirm|i certify|t\s*&\s*c|policy|disclaimer|liability|waiver|indemnity)/i;
+  return (formFields || [])
+    .filter((f) => re.test(String(f.label || '')) && ['checkbox', 'radio'].includes(f.type))
+    .map((f) => f.fieldKey);
 }
 
 // Translate `rows` (keyed by column label) into rows keyed by fieldKey using
