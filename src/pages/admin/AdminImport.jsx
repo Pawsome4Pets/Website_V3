@@ -1,89 +1,83 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
 import SEO from '../../components/SEO';
 import Button from '../../components/Button';
 import PageHeader from '../../components/admin/PageHeader';
 import Card from '../../components/admin/Card';
 import { apiFetch } from '../../lib/api';
-import { parseCognitoForm } from '../../lib/cognitoImport';
-import { parseCognitoExcel } from '../../lib/excelImport';
+import {
+  parseExcelSubmissions,
+  parseJsonSubmissions,
+  autoMapColumns,
+  remapRows,
+} from '../../lib/submissionsImport';
 
 const inputCls =
   'w-full rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm text-charcoal outline-none transition-colors focus:border-coral focus:ring-2 focus:ring-coral/20';
 
-const TAB = { JSON: 'json', EXCEL: 'excel' };
-
 export default function AdminImport() {
-  const navigate = useNavigate();
-  const [tab, setTab] = useState(TAB.EXCEL);
+  // ── Available forms (the user picks the target before uploading) ──────────
+  const [forms, setForms] = useState([]);
+  const [loadingForms, setLoadingForms] = useState(true);
+  const [formId, setFormId] = useState('');
+  const [formDetail, setFormDetail] = useState(null); // full form (with fields) for the chosen id
 
-  // ── Shared state for the parsed-preview / import-action UI ────────────────
-  const [parsed, setParsed] = useState(null);          // { title, description, fields, submissions? }
-  const [title, setTitle] = useState('');
+  useEffect(() => {
+    apiFetch('/admin/forms')
+      .then((d) => setForms(d.forms || []))
+      .catch((e) => setError(e.message))
+      .finally(() => setLoadingForms(false));
+  }, []);
+
+  useEffect(() => {
+    if (!formId) { setFormDetail(null); return; }
+    setFormDetail(null);
+    apiFetch(`/admin/forms/${formId}`)
+      .then((d) => setFormDetail(d.form))
+      .catch((e) => setError(e.message));
+  }, [formId]);
+
+  // ── Parsed file state ─────────────────────────────────────────────────────
+  const [fileName, setFileName] = useState('');
+  const [parsed, setParsed] = useState(null);   // { columns, rows, ignoredMetaColumns, sourceLabel }
+  const [mapping, setMapping] = useState({});   // { columnLabel: fieldKey | '' }
   const [error, setError] = useState('');
-  const [importing, setImporting] = useState(false);
   const [success, setSuccess] = useState('');
+  const [importing, setImporting] = useState(false);
 
-  // ── JSON-specific ─────────────────────────────────────────────────────────
-  const [jsonRaw, setJsonRaw] = useState('');
+  // Auto-build a default mapping once both the form's fields and a parsed file
+  // are available. The user can refine it before clicking Import.
+  useEffect(() => {
+    if (!parsed || !formDetail) return;
+    setMapping(autoMapColumns(parsed.columns, formDetail.fields));
+  }, [parsed, formDetail]);
 
-  // ── Excel-specific ────────────────────────────────────────────────────────
-  const [excelFileName, setExcelFileName] = useState('');
-  const [importSubmissions, setImportSubmissions] = useState(false);
+  const fieldOptions = useMemo(
+    () => (formDetail?.fields || []).map((f) => ({ key: f.fieldKey, label: f.label, type: f.type })),
+    [formDetail],
+  );
 
-  const switchTab = (next) => {
-    setTab(next);
-    setParsed(null);
-    setTitle('');
-    setError('');
-    setSuccess('');
-    setJsonRaw('');
-    setExcelFileName('');
-    setImportSubmissions(false);
-  };
+  const mappedCount = useMemo(
+    () => Object.values(mapping).filter(Boolean).length,
+    [mapping],
+  );
 
-  // ── JSON parsing ──────────────────────────────────────────────────────────
-  const parseJson = (raw) => {
-    setError('');
-    setParsed(null);
-    setSuccess('');
-    if (!raw || !raw.trim()) return;
-    try {
-      const result = parseCognitoForm(raw);
-      setParsed(result);
-      setTitle(result.title);
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const onJsonFile = async (e) => {
+  const onFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setError(''); setSuccess(''); setParsed(null); setMapping({});
     try {
-      const text = await file.text();
-      setJsonRaw(text);
-      parseJson(text);
-    } catch (err) {
-      setError(`Could not read file: ${err.message}`);
-    } finally {
-      e.target.value = '';
-    }
-  };
-
-  // ── Excel parsing ─────────────────────────────────────────────────────────
-  const onExcelFile = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError('');
-    setSuccess('');
-    setParsed(null);
-    try {
-      const buffer = await file.arrayBuffer();
-      const result = parseCognitoExcel(buffer, { fileName: file.name });
+      const lower = file.name.toLowerCase();
+      let result;
+      if (lower.endsWith('.json')) {
+        const text = await file.text();
+        result = parseJsonSubmissions(text, { fileName: file.name });
+      } else {
+        // Default to Excel parser for .xlsx / .xls / .csv
+        const buffer = await file.arrayBuffer();
+        result = parseExcelSubmissions(buffer, { fileName: file.name });
+      }
+      setFileName(file.name);
       setParsed(result);
-      setTitle(result.title);
-      setExcelFileName(file.name);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -91,49 +85,33 @@ export default function AdminImport() {
     }
   };
 
-  // ── Run the import ────────────────────────────────────────────────────────
+  const onMapChange = (col, fieldKey) => {
+    setMapping((m) => ({ ...m, [col]: fieldKey || null }));
+  };
+
+  const clearAll = () => {
+    setFileName(''); setParsed(null); setMapping({});
+    setError(''); setSuccess('');
+  };
+
   const runImport = async () => {
-    if (!parsed || !title.trim()) return;
-    setImporting(true);
-    setError('');
-    setSuccess('');
+    if (!formId || !parsed || mappedCount === 0) return;
+    setImporting(true); setError(''); setSuccess('');
     try {
-      const { form } = await apiFetch('/admin/forms', {
+      const rows = remapRows(parsed.rows, mapping).filter((r) => Object.keys(r).length > 0);
+      if (rows.length === 0) {
+        setError('No rows to import after mapping — make sure at least one column is mapped to a field.');
+        setImporting(false);
+        return;
+      }
+      const result = await apiFetch(`/admin/forms/${formId}/submissions/bulk`, {
         method: 'POST',
-        body: {
-          title: title.trim(),
-          ...(parsed.description ? { description: parsed.description } : {}),
-        },
+        body: { rows },
       });
-
-      if (parsed.fields.length) {
-        const fieldsPayload = parsed.fields.map((f) => {
-          const { _sourceType, ...clean } = f;
-          return clean;
-        });
-        await apiFetch(`/admin/forms/${form.id}/fields`, {
-          method: 'PUT',
-          body: { fields: fieldsPayload },
-        });
-      }
-
-      // Excel only: optionally seed historical submissions.
-      if (tab === TAB.EXCEL && importSubmissions && Array.isArray(parsed.submissions) && parsed.submissions.length) {
-        try {
-          await apiFetch(`/admin/forms/${form.id}/submissions/bulk`, {
-            method: 'POST',
-            body: { rows: parsed.submissions },
-          });
-        } catch (subErr) {
-          // Surface the partial outcome — form is created, but seeding failed.
-          setError(`Form created, but historical submissions failed to import: ${subErr.message}`);
-          setSuccess('');
-          navigate(`/admin/forms/${form.id}`);
-          return;
-        }
-      }
-
-      navigate(`/admin/forms/${form.id}`);
+      setSuccess(
+        `Imported ${result.created} submission${result.created === 1 ? '' : 's'} into "${formDetail.title}". ` +
+        `Skipped ${result.skipped}; ${result.answersCreated} answers stored.`,
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -143,10 +121,10 @@ export default function AdminImport() {
 
   return (
     <>
-      <SEO title="Admin · Import" />
+      <SEO title="Admin · Import submissions" />
       <PageHeader
-        title="Import legacy forms"
-        subtitle="Bring old Cognito Forms across — paste the JSON backup or upload an Excel entries export."
+        title="Import submissions"
+        subtitle="Bring legacy form responses across — pick a target form, upload Excel or JSON, then map the columns."
       />
 
       {error && (
@@ -160,222 +138,157 @@ export default function AdminImport() {
         </div>
       )}
 
-      <Card>
-        {/* Tabs */}
-        <div className="mb-6 inline-flex rounded-full border border-beige bg-white/60 p-1">
-          <button
-            type="button"
-            onClick={() => switchTab(TAB.EXCEL)}
-            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
-              tab === TAB.EXCEL ? 'bg-coral text-cream' : 'text-cocoa hover:text-coral'
-            }`}
-          >
-            Excel (.xlsx)
-          </button>
-          <button
-            type="button"
-            onClick={() => switchTab(TAB.JSON)}
-            className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${
-              tab === TAB.JSON ? 'bg-coral text-cream' : 'text-cocoa hover:text-coral'
-            }`}
-          >
-            JSON backup
-          </button>
-        </div>
-
-        {tab === TAB.EXCEL ? (
-          <ExcelPanel
-            onFile={onExcelFile}
-            fileName={excelFileName}
-            importSubmissions={importSubmissions}
-            setImportSubmissions={setImportSubmissions}
-            submissionCount={parsed?.submissions?.length ?? 0}
-          />
+      <Card title="1. Choose target form">
+        {loadingForms ? (
+          <p className="text-sm text-cocoa">Loading forms…</p>
+        ) : forms.length === 0 ? (
+          <p className="text-sm text-cocoa">
+            You don't have any forms yet. Create one on the <a href="/admin/forms" className="font-semibold text-coral hover:underline">Forms</a> page before importing submissions.
+          </p>
         ) : (
-          <JsonPanel jsonRaw={jsonRaw} setJsonRaw={setJsonRaw} parseJson={parseJson} onFile={onJsonFile} />
-        )}
-
-        {parsed && (
-          <Preview parsed={parsed} title={title} setTitle={setTitle} />
-        )}
-
-        <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-beige/40 pt-5">
-          {parsed && (
-            <button
-              type="button"
-              onClick={() => switchTab(tab)}
-              disabled={importing}
-              className="text-sm text-cocoa hover:text-coral disabled:opacity-50"
+          <label className="block">
+            <span className="text-xs font-semibold uppercase tracking-widest text-cocoa">
+              Form
+            </span>
+            <select
+              value={formId}
+              onChange={(e) => { setFormId(e.target.value); setParsed(null); setMapping({}); setError(''); setSuccess(''); }}
+              className={`${inputCls} mt-1`}
             >
-              Clear
-            </button>
-          )}
-          <Button
-            type="button"
-            onClick={runImport}
-            disabled={importing || !parsed || !title.trim() || parsed.fields.length === 0}
-          >
-            {importing ? 'Importing…' : 'Import & open editor'}
-          </Button>
-        </div>
+              <option value="">— select a form —</option>
+              {forms.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.title} · {f._count?.fields ?? 0} field{(f._count?.fields ?? 0) === 1 ? '' : 's'}
+                </option>
+              ))}
+            </select>
+            {formDetail && (
+              <p className="mt-2 text-xs text-cocoa">
+                {formDetail.fields.length} field{formDetail.fields.length === 1 ? '' : 's'} on this form.
+                Imported rows will be mapped to these field keys.
+              </p>
+            )}
+          </label>
+        )}
       </Card>
+
+      <div className="mt-6">
+        <Card title="2. Upload data file">
+          <p className="text-sm text-cocoa">
+            Excel (<span className="font-mono">.xlsx</span>) with a header row, or JSON
+            (array of entries, or <span className="font-mono">{`{ entries: [...] }`}</span>).
+            Cognito Forms "Entries → Export" works for both formats as-is.
+          </p>
+
+          <div className="mt-4">
+            <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm font-medium text-charcoal transition-colors hover:border-coral hover:text-coral ${!formId ? 'opacity-50 pointer-events-none' : ''}`}>
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
+              </svg>
+              {fileName ? 'Choose another file' : 'Choose .xlsx or .json file'}
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv,.json,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                onChange={onFile}
+                className="hidden"
+                disabled={!formId}
+              />
+            </label>
+            {!formId && (
+              <p className="mt-2 text-xs text-cocoa">Pick a target form above first.</p>
+            )}
+            {parsed && (
+              <p className="mt-3 text-xs text-cocoa">Loaded: <span className="font-mono">{parsed.sourceLabel}</span></p>
+            )}
+            {parsed?.ignoredMetaColumns?.length > 0 && (
+              <p className="mt-1 text-xs text-cocoa">
+                Skipped meta columns: <span className="font-mono">{parsed.ignoredMetaColumns.join(', ')}</span>
+              </p>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {parsed && formDetail && (
+        <div className="mt-6">
+          <Card
+            title={`3. Map columns → form fields  (${mappedCount}/${parsed.columns.length} mapped)`}
+          >
+            <p className="text-sm text-cocoa">
+              We auto-matched columns to fields by label. Override anything that looks wrong.
+              Columns set to "— ignore —" won't be imported.
+            </p>
+
+            <ul className="mt-4 max-h-[28rem] divide-y divide-beige/40 overflow-y-auto rounded-2xl border border-beige/60 bg-cream/30">
+              {parsed.columns.map((col) => (
+                <li key={col} className="grid grid-cols-1 gap-2 px-4 py-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+                  <div className="text-sm">
+                    <span className="font-medium text-charcoal">{col}</span>
+                    <span className="ml-2 text-[11px] text-cocoa">
+                      {sampleFor(parsed.rows, col)}
+                    </span>
+                  </div>
+                  <span className="hidden text-cocoa sm:inline">→</span>
+                  <select
+                    value={mapping[col] || ''}
+                    onChange={(e) => onMapChange(col, e.target.value)}
+                    className={inputCls}
+                  >
+                    <option value="">— ignore —</option>
+                    {fieldOptions.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}  ({f.type})
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      )}
+
+      {parsed && (
+        <div className="mt-6">
+          <Card title={`4. Import  (${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} ready)`}>
+            <p className="text-sm text-cocoa">
+              Each row becomes one submission against
+              {' '}<span className="font-semibold text-charcoal">{formDetail?.title || 'the chosen form'}</span>.
+              Rows where every mapped value is empty are skipped server-side.
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-3 border-t border-beige/40 pt-4">
+              <button
+                type="button"
+                onClick={clearAll}
+                disabled={importing}
+                className="text-sm text-cocoa hover:text-coral disabled:opacity-50"
+              >
+                Clear
+              </button>
+              <Button
+                type="button"
+                onClick={runImport}
+                disabled={importing || !formId || !parsed || mappedCount === 0}
+              >
+                {importing ? 'Importing…' : `Import ${parsed.rows.length} submission${parsed.rows.length === 1 ? '' : 's'}`}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </>
   );
 }
 
-// ── Sub-components (kept in-file to match the existing AdminForms style) ─────
-
-function ExcelPanel({ onFile, fileName, importSubmissions, setImportSubmissions, submissionCount }) {
-  return (
-    <div className="space-y-5">
-      <p className="text-sm text-cocoa">
-        Export your form from Cognito Forms as Excel (<span className="font-mono">Entries → Export → Excel</span>),
-        then upload the <span className="font-mono">.xlsx</span> here. We'll read the column
-        headers to recreate the form fields, and optionally bring across the rows as historical submissions.
-      </p>
-
-      <div className="grid gap-4 sm:grid-cols-[auto_1fr] sm:items-center">
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm font-medium text-charcoal transition-colors hover:border-coral hover:text-coral">
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
-          </svg>
-          {fileName ? 'Choose another file' : 'Choose .xlsx file'}
-          <input
-            type="file"
-            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-            onChange={onFile}
-            className="hidden"
-          />
-        </label>
-        {fileName && (
-          <span className="text-xs text-cocoa">
-            Loaded <span className="font-mono">{fileName}</span>
-          </span>
-        )}
-      </div>
-
-      {submissionCount > 0 && (
-        <label className="flex items-start gap-3 rounded-xl border border-beige bg-cream/40 p-4 text-sm text-charcoal">
-          <input
-            type="checkbox"
-            checked={importSubmissions}
-            onChange={(e) => setImportSubmissions(e.target.checked)}
-            className="mt-0.5 h-4 w-4 accent-coral"
-          />
-          <span>
-            <span className="font-semibold">Also import {submissionCount} historical submission{submissionCount === 1 ? '' : 's'}</span>
-            <span className="mt-1 block text-xs text-cocoa">
-              Each data row in the sheet becomes a submission against the new form. Existing field types are used to
-              parse values; rows that fail validation will be skipped server-side.
-            </span>
-          </span>
-        </label>
-      )}
-    </div>
-  );
-}
-
-function JsonPanel({ jsonRaw, setJsonRaw, parseJson, onFile }) {
-  const onPaste = (val) => {
-    setJsonRaw(val);
-    parseJson(val);
-  };
-  return (
-    <div className="space-y-5">
-      <p className="text-sm text-cocoa">
-        Export the form from Cognito Forms (<span className="font-mono">Settings → Backup</span>),
-        then upload the <span className="font-mono">.json</span> file or paste its contents below.
-      </p>
-
-      <div className="grid gap-4 sm:grid-cols-[auto_1fr] sm:items-center">
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-beige bg-white/70 px-4 py-2.5 text-sm font-medium text-charcoal transition-colors hover:border-coral hover:text-coral">
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
-          </svg>
-          Choose .json file
-          <input
-            type="file"
-            accept="application/json,.json"
-            onChange={onFile}
-            className="hidden"
-          />
-        </label>
-        <span className="text-xs text-cocoa">
-          …or paste the JSON below. Backup files from Cognito Forms work as-is.
-        </span>
-      </div>
-
-      <label className="block">
-        <span className="text-xs font-semibold uppercase tracking-widest text-cocoa">Cognito JSON</span>
-        <textarea
-          value={jsonRaw}
-          onChange={(e) => onPaste(e.target.value)}
-          rows={6}
-          placeholder='{"Name":"...","Items":[ ... ]}'
-          className={`${inputCls} mt-1 font-mono text-xs`}
-        />
-      </label>
-    </div>
-  );
-}
-
-function Preview({ parsed, title, setTitle }) {
-  return (
-    <div className="mt-6 rounded-2xl border border-beige/60 bg-cream/40 p-5">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
-        <h4 className="font-serif text-base text-charcoal">Preview</h4>
-        <span className="text-xs text-cocoa">
-          {parsed.fields.length} field{parsed.fields.length === 1 ? '' : 's'} detected
-          {Array.isArray(parsed.submissions) && parsed.submissions.length > 0 && (
-            <> · {parsed.submissions.length} submission row{parsed.submissions.length === 1 ? '' : 's'}</>
-          )}
-        </span>
-      </div>
-
-      <label className="block">
-        <span className="text-xs font-semibold uppercase tracking-widest text-cocoa">
-          Title (edit before importing)
-        </span>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className={`${inputCls} mt-1`}
-        />
-      </label>
-
-      {parsed.description && (
-        <p className="mt-3 text-xs text-cocoa">
-          <span className="font-semibold uppercase tracking-widest">Description:</span>{' '}
-          <span className="line-clamp-3">{parsed.description}</span>
-        </p>
-      )}
-
-      {parsed.fields.length === 0 ? (
-        <p className="mt-4 text-sm text-cocoa">
-          No fields were detected. Double-check that the file is a Cognito Forms backup
-          (for JSON) or an entries export with a header row (for Excel).
-        </p>
-      ) : (
-        <ul className="mt-4 max-h-72 space-y-1.5 overflow-y-auto pr-1">
-          {parsed.fields.map((f, i) => (
-            <li key={`${f.fieldKey}_${i}`} className="flex items-start gap-3 text-sm">
-              <span className="mt-0.5 inline-block min-w-[70px] rounded-full bg-beige/40 px-2 py-0.5 text-center text-[10px] font-semibold uppercase tracking-wider text-cocoa">
-                {f.type}
-              </span>
-              <span className="flex-1">
-                <span className="font-medium text-charcoal">{f.label}</span>
-                {f.isRequired && <span className="ml-1 text-coral">*</span>}
-                <span className="ml-2 font-mono text-[11px] text-cocoa">{f.fieldKey}</span>
-                {Array.isArray(f.options) && f.options.length > 0 && (
-                  <span className="mt-0.5 block text-[11px] text-cocoa">
-                    Options: {f.options.slice(0, 8).join(', ')}{f.options.length > 8 ? '…' : ''}
-                  </span>
-                )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+// Show the first non-empty value of a column as a tiny preview hint.
+function sampleFor(rows, col) {
+  for (const r of rows) {
+    const v = r[col];
+    if (v != null && String(v).trim() !== '') {
+      const s = String(v).replace(/\s+/g, ' ');
+      return `e.g. "${s.length > 40 ? s.slice(0, 37) + '…' : s}"`;
+    }
+  }
+  return '(no data)';
 }
