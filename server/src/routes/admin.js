@@ -461,56 +461,64 @@ router.put('/forms/:id/fields',
       const formId = Number(req.params.id);
       const incoming = req.body.fields;
 
-      await prisma.$transaction(async (tx) => {
-        const existing = await tx.formField.findMany({ where: { formId }, select: { id: true } });
-        const incomingIds = new Set(incoming.filter((f) => f.id).map((f) => Number(f.id)));
-        const toDelete = existing.filter((e) => !incomingIds.has(e.id)).map((e) => e.id);
-        if (toDelete.length) await tx.formField.deleteMany({ where: { id: { in: toDelete } } });
+      // Bulk-replace strategy.
+      //
+      // The old per-field update/create loop made 1 query PER field. For a
+      // 172-field form running on Vercel-iad1 ↔ Afrihost-SA (≈250 ms RTT)
+      // that's ~43 s — well past the 30 s function limit.
+      //
+      // New strategy:
+      //   1. Wipe existing fields (conditions cascade-delete via FK).
+      //   2. createMany() all new fields in ONE round trip.
+      //   3. findMany() to get the new IDs back in position order.
+      //   4. createMany() all conditions in ONE round trip.
+      //
+      // Total: 4–5 round trips regardless of how many fields the form has.
+      // Trade-off: editing a single field still rewrites the whole list — fine
+      // for our admin flow which always saves the whole form anyway.
 
+      await prisma.formField.deleteMany({ where: { formId } });
+
+      if (incoming.length) {
+        const fieldsData = incoming.map((f, i) => ({
+          formId,
+          fieldKey: f.fieldKey || `field_${Date.now()}_${i}`,
+          label: f.label || 'Untitled',
+          type: f.type || 'text',
+          placeholder: f.placeholder ?? null,
+          helpText: f.helpText ?? null,
+          isRequired: !!f.isRequired,
+          position: i,
+          options: encodeJson(f.options),
+          validation: encodeJson(f.validation),
+        }));
+        await prisma.formField.createMany({ data: fieldsData });
+
+        const inserted = await prisma.formField.findMany({
+          where: { formId },
+          orderBy: { position: 'asc' },
+          select: { id: true, position: true },
+        });
+
+        const conditionsData = [];
         for (let i = 0; i < incoming.length; i++) {
           const f = incoming[i];
-          const data = {
-            formId,
-            fieldKey: f.fieldKey || `field_${Date.now()}_${i}`,
-            label: f.label || 'Untitled',
-            type: f.type || 'text',
-            placeholder: f.placeholder ?? null,
-            helpText: f.helpText ?? null,
-            isRequired: !!f.isRequired,
-            position: i,
-            options: encodeJson(f.options),
-            validation: encodeJson(f.validation),
-          };
-          if (f.id) {
-            await tx.formField.update({ where: { id: Number(f.id) }, data });
-            await tx.fieldCondition.deleteMany({ where: { fieldId: Number(f.id) } });
-            if (Array.isArray(f.conditions) && f.conditions.length) {
-              await tx.fieldCondition.createMany({
-                data: f.conditions.map((c) => ({
-                  fieldId: Number(f.id),
-                  dependsOnKey: c.dependsOnKey,
-                  operator: c.operator,
-                  value: String(c.value ?? ''),
-                  action: c.action,
-                })),
-              });
-            }
-          } else {
-            const created = await tx.formField.create({ data });
-            if (Array.isArray(f.conditions) && f.conditions.length) {
-              await tx.fieldCondition.createMany({
-                data: f.conditions.map((c) => ({
-                  fieldId: created.id,
-                  dependsOnKey: c.dependsOnKey,
-                  operator: c.operator,
-                  value: String(c.value ?? ''),
-                  action: c.action,
-                })),
-              });
-            }
+          const dbField = inserted[i];
+          if (!dbField || !Array.isArray(f.conditions) || !f.conditions.length) continue;
+          for (const c of f.conditions) {
+            conditionsData.push({
+              fieldId: dbField.id,
+              dependsOnKey: c.dependsOnKey,
+              operator: c.operator,
+              value: String(c.value ?? ''),
+              action: c.action,
+            });
           }
         }
-      });
+        if (conditionsData.length) {
+          await prisma.fieldCondition.createMany({ data: conditionsData });
+        }
+      }
 
       const form = await prisma.form.findUnique({
         where: { id: formId },
