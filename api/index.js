@@ -6,16 +6,11 @@
 //
 // The Express app is built once per cold start and reused across warm
 // invocations, so the Prisma client cached on globalThis stays alive too.
+//
+// Node version is set in Vercel project settings → Node.js Version (we want
+// 20.x or newer because Prisma 5 requires Node 18.18+). It cannot be pinned
+// from this file with raw /api functions.
 
 import app from '../server/src/app.js';
 
 export default app;
-
-// Vercel reads this config object to pick the Node runtime. We pin Node 20
-// because Prisma 5.x requires Node 18.18+ and Vercel's "nodejs20.x" runtime
-// matches what `npm install` on the build server uses.
-export const config = {
-  runtime: 'nodejs20.x',
-  // Body parsing is handled by Express; don't let Vercel parse it first.
-  api: { bodyParser: false },
-};
