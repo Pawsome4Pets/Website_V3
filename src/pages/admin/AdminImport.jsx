@@ -282,13 +282,25 @@ export default function AdminImport() {
 }
 
 // Show the first non-empty value of a column as a tiny preview hint.
+// Arrays (repeater data) and objects get a short shape description instead of
+// raw "[object Object]".
 function sampleFor(rows, col) {
   for (const r of rows) {
     const v = r[col];
-    if (v != null && String(v).trim() !== '') {
-      const s = String(v).replace(/\s+/g, ' ');
-      return `e.g. "${s.length > 40 ? s.slice(0, 37) + '…' : s}"`;
+    if (v == null) continue;
+    if (Array.isArray(v)) {
+      if (v.length === 0) continue;
+      return `(${v.length} ${v.length === 1 ? 'entry' : 'entries'} — repeater data)`;
     }
+    if (typeof v === 'object') {
+      const keys = Object.keys(v);
+      if (keys.length === 0) continue;
+      return `(nested: ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? '…' : ''})`;
+    }
+    const s = String(v).trim();
+    if (s === '') continue;
+    const flat = s.replace(/\s+/g, ' ');
+    return `e.g. "${flat.length > 40 ? flat.slice(0, 37) + '…' : flat}"`;
   }
   return '(no data)';
 }

@@ -92,12 +92,134 @@ export function parseExcelSubmissions(buffer, opts = {}) {
 }
 
 // ─── JSON entries export ────────────────────────────────────────────────────
-// Accepts:
-//   • Bare array of objects:        [ { Name: '...', Email: '...' }, ... ]
-//   • Wrapped:                       { Entries: [...] } or { items: [...] }
-//   • Cognito-style nested entries:  [ { Entry: { Name: '...' }, ... }, ... ]
+// Designed for Cognito Forms' full "Entries → Export → JSON" download.
 //
-// Returns the same { columns, rows, ignoredMetaColumns, sourceLabel } shape.
+// Cognito's shape (simplified):
+//   [
+//     {
+//       "Id": 1, "Number": 1, "DateCreated": "...", "DateSubmitted": "...",
+//       "Status": "Submitted", "Entry": { "AdminLink": "...", ... },   ← meta, dropped
+//
+//       // Real form fields at top level:
+//       "OwnerName":  { "First": "Alice", "Last": "Smith" },           ← flatten → 2 cols
+//       "Address":    { "Line1": "...", "City": "...", "PostalCode": "..." }, ← flatten
+//       "Phone":      "+27 …",                                          ← scalar
+//       "Owners":     [ { ... }, { ... } ],                             ← repeater, KEEP
+//       "Dogs":       [ { "Name": "Rex", "Breed": "..." }, ... ],       ← repeater, KEEP
+//       "DocsUpload": [ { "File": "...url...", ... } ]                  ← keep as JSON
+//     },
+//     ...
+//   ]
+//
+// Output:
+//   columns: ['Owner First Name', 'Owner Last Name', 'Phone', 'Owners', 'Dogs', ...]
+//   rows:    [ { 'Owner First Name': 'Alice', 'Owners': [...], 'Dogs': [...] }, ... ]
+//
+// Repeater values stay as arrays so the admin import page can pass them through
+// to our `repeater` field type without losing structure. Scalar columns stay as
+// strings.
+
+// Cognito sub-object shapes we know how to split nicely. If the value matches
+// one of these schemas exactly we'll flatten it; otherwise we fall back to a
+// generic "Parent Sub" flatten.
+const KNOWN_SUBSHAPES = [
+  { type: 'name', keys: ['First', 'Last', 'Middle', 'Prefix', 'Suffix'] },
+  { type: 'address', keys: ['Line1', 'Line2', 'City', 'State', 'PostalCode', 'Country'] },
+];
+
+function classifySubshape(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const ks = Object.keys(obj);
+  for (const shape of KNOWN_SUBSHAPES) {
+    if (ks.every((k) => shape.keys.includes(k))) return shape.type;
+  }
+  return null;
+}
+
+// Cognito wraps each entry's metadata in an "Entry" sub-object. Some exports
+// also put the form fields under a "Name" or top-level key. We unwrap.
+function unwrapEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  // Drop the "Entry" meta sub-object outright — we never want fields from it.
+  if (entry.Entry && typeof entry.Entry === 'object') {
+    const { Entry, ...rest } = entry;
+    return rest;
+  }
+  return entry;
+}
+
+function flattenOneEntry(entry) {
+  const flat = {};
+  const e = unwrapEntry(entry);
+  for (const [k, v] of Object.entries(e || {})) {
+    if (v == null || v === '') continue;
+    if (isMetaColumn(k)) continue;
+
+    // Scalar
+    if (typeof v !== 'object') {
+      flat[k] = String(v);
+      continue;
+    }
+
+    // Array — preserved as-is so repeaters round-trip. The import page passes
+    // these through to the matching field; the bulk-submission endpoint stores
+    // them as a JSON-stringified value, which our `repeater` field decodes.
+    if (Array.isArray(v)) {
+      flat[k] = v.map(stripNested);
+      continue;
+    }
+
+    // Object → try a smart flatten
+    const shape = classifySubshape(v);
+    if (shape === 'name') {
+      // OwnerName: { First, Last, Middle } → "Owner First Name", "Owner Last Name"
+      const niceParent = k.replace(/Name$/i, '').trim() || k;
+      if (v.First) flat[`${niceParent} First Name`] = String(v.First);
+      if (v.Middle) flat[`${niceParent} Middle Name`] = String(v.Middle);
+      if (v.Last) flat[`${niceParent} Last Name`] = String(v.Last);
+      if (v.Prefix) flat[`${niceParent} Prefix`] = String(v.Prefix);
+      if (v.Suffix) flat[`${niceParent} Suffix`] = String(v.Suffix);
+    } else if (shape === 'address') {
+      if (v.Line1) flat[`${k} Line 1`] = String(v.Line1);
+      if (v.Line2) flat[`${k} Line 2`] = String(v.Line2);
+      if (v.City) flat[`${k} City`] = String(v.City);
+      if (v.State) flat[`${k} State`] = String(v.State);
+      if (v.PostalCode) flat[`${k} Postal Code`] = String(v.PostalCode);
+      if (v.Country) flat[`${k} Country`] = String(v.Country);
+    } else {
+      // Generic one-level flatten: { Parent: { A, B } } → "Parent A", "Parent B"
+      for (const [kk, vv] of Object.entries(v)) {
+        if (vv == null || vv === '') continue;
+        if (typeof vv === 'object') flat[`${k} ${kk}`] = JSON.stringify(vv);
+        else flat[`${k} ${kk}`] = String(vv);
+      }
+    }
+  }
+  return flat;
+}
+
+// Strip the inner "Entry" meta wrapper from each repeater row, so what gets
+// stored as the repeater value is just the user-visible fields.
+function stripNested(x) {
+  if (x == null) return x;
+  if (typeof x !== 'object') return x;
+  if (Array.isArray(x)) return x.map(stripNested);
+  const out = {};
+  for (const [k, v] of Object.entries(x)) {
+    if (isMetaColumn(k)) continue;
+    if (v == null || v === '') continue;
+    if (typeof v === 'object' && !Array.isArray(v) && classifySubshape(v) === 'name') {
+      const parts = [v.First, v.Middle, v.Last].filter(Boolean).join(' ');
+      if (parts) out[k] = parts;
+    } else if (typeof v === 'object') {
+      out[k] = stripNested(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 export function parseJsonSubmissions(input, opts = {}) {
   let data;
   if (typeof input === 'string') {
@@ -111,7 +233,7 @@ export function parseJsonSubmissions(input, opts = {}) {
     throw new Error('No data to import.');
   }
 
-  // Unwrap common containers
+  // Unwrap common container envelopes
   if (!Array.isArray(data)) {
     if (Array.isArray(data.Entries)) data = data.Entries;
     else if (Array.isArray(data.entries)) data = data.entries;
@@ -128,42 +250,26 @@ export function parseJsonSubmissions(input, opts = {}) {
     };
   }
 
-  // Flatten Cognito-style { Entry: { ... } } wrappers and squash one level of
-  // nested objects (rare but harmless).
-  const flatRows = data.map((entry) => {
-    if (entry && typeof entry === 'object' && entry.Entry && typeof entry.Entry === 'object') {
-      entry = { ...entry.Entry, ...entry };
-      delete entry.Entry;
-    }
-    const flat = {};
-    for (const [k, v] of Object.entries(entry || {})) {
-      if (v == null) continue;
-      if (typeof v === 'object' && !Array.isArray(v)) {
-        // One-level flatten: { Address: { Street, City } } → "Address Street", "Address City"
-        for (const [kk, vv] of Object.entries(v)) {
-          if (vv == null || vv === '') continue;
-          flat[`${k} ${kk}`] = String(vv);
-        }
-      } else if (Array.isArray(v)) {
-        flat[k] = v.map((x) => (x == null ? '' : typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ');
-      } else {
-        flat[k] = String(v);
-      }
-    }
-    return flat;
-  });
+  const flatRows = data.map(flattenOneEntry);
 
-  // Build column list from the union of keys, preserving first-seen order, with
-  // meta columns separated out.
+  // Build column list from the union of keys (preserving first-seen order)
+  // and track meta columns we dropped so the user knows what was skipped.
   const seen = new Set();
   const columns = [];
   const ignoredMetaColumns = [];
+  const originalKeys = new Set();
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+    for (const k of Object.keys(unwrapEntry(row))) originalKeys.add(k);
+  }
+  for (const k of originalKeys) {
+    if (isMetaColumn(k)) ignoredMetaColumns.push(k);
+  }
   for (const row of flatRows) {
     for (const key of Object.keys(row)) {
       if (seen.has(key)) continue;
       seen.add(key);
-      if (isMetaColumn(key)) ignoredMetaColumns.push(key);
-      else columns.push(key);
+      columns.push(key);
     }
   }
 
@@ -184,31 +290,67 @@ export function parseJsonSubmissions(input, opts = {}) {
 // ─── Mapping helpers ─────────────────────────────────────────────────────────
 // Given the file's column labels and the form's fields, produce a default map:
 //   { [columnLabel]: fieldKey | null }
-// Match priority:
+// Match attempts, in order:
 //   1. exact fieldKey match (case-sensitive)
-//   2. case-insensitive trimmed label match
-//   3. fuzzy: strip non-alphanumeric, compare lowercase
+//   2. fieldKey case-insensitive
+//   3. label case-insensitive trimmed
+//   4. fuzzy alphanumeric only (handles spaces, punctuation)
+//   5. fuzzy + singularised (handles Cognito plural like "Owners" → "Owner")
+
+function singularise(s) {
+  // Naive but sufficient for our forms.
+  if (s.endsWith('ies')) return s.slice(0, -3) + 'y';
+  if (s.endsWith('ses')) return s.slice(0, -2);
+  if (s.endsWith('s') && !s.endsWith('ss')) return s.slice(0, -1);
+  return s;
+}
+
+function fuzzy(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
 export function autoMapColumns(columns, formFields) {
-  const byKey = new Map(formFields.map((f) => [f.fieldKey, f]));
-  const byLabel = new Map(formFields.map((f) => [String(f.label || '').trim().toLowerCase(), f]));
-  const byFuzzy = new Map(formFields.map((f) => [
-    String(f.label || '').toLowerCase().replace(/[^a-z0-9]+/g, ''),
-    f,
-  ]));
+  const indexes = {
+    keyExact: new Map(),
+    keyLower: new Map(),
+    labelLower: new Map(),
+    fuzzy: new Map(),
+    fuzzySingular: new Map(),
+  };
+  for (const f of formFields) {
+    const key = String(f.fieldKey || '');
+    const label = String(f.label || '');
+    indexes.keyExact.set(key, f);
+    indexes.keyLower.set(key.toLowerCase(), f);
+    indexes.labelLower.set(label.trim().toLowerCase(), f);
+    indexes.fuzzy.set(fuzzy(label), f);
+    indexes.fuzzy.set(fuzzy(key), f);
+    indexes.fuzzySingular.set(singularise(fuzzy(label)), f);
+    indexes.fuzzySingular.set(singularise(fuzzy(key)), f);
+  }
 
   const mapping = {};
   for (const col of columns) {
     const t = String(col || '').trim();
-    let match = byKey.get(t)
-      || byLabel.get(t.toLowerCase())
-      || byFuzzy.get(t.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+    const lo = t.toLowerCase();
+    const fz = fuzzy(t);
+    const fzs = singularise(fz);
+    const match = indexes.keyExact.get(t)
+      || indexes.keyLower.get(lo)
+      || indexes.labelLower.get(lo)
+      || indexes.fuzzy.get(fz)
+      || indexes.fuzzy.get(fzs)
+      || indexes.fuzzySingular.get(fz)
+      || indexes.fuzzySingular.get(fzs);
     mapping[col] = match ? match.fieldKey : null;
   }
   return mapping;
 }
 
 // Translate `rows` (keyed by column label) into rows keyed by fieldKey using
-// the mapping. Drops columns mapped to null.
+// the mapping. Drops columns mapped to null. Arrays/objects (repeater data,
+// nested structures) are JSON-stringified so the bulk-submission endpoint can
+// store them — they're decoded back to objects when the submission is viewed.
 export function remapRows(rows, mapping) {
   return rows.map((row) => {
     const out = {};
@@ -216,7 +358,14 @@ export function remapRows(rows, mapping) {
       const fieldKey = mapping[col];
       if (!fieldKey) continue;
       if (value === undefined || value === null || value === '') continue;
-      out[fieldKey] = value;
+      if (typeof value === 'object') {
+        // Empty array / empty object → skip
+        const empty = Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0;
+        if (empty) continue;
+        out[fieldKey] = JSON.stringify(value);
+      } else {
+        out[fieldKey] = String(value);
+      }
     }
     return out;
   });
