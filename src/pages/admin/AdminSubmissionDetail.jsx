@@ -72,14 +72,57 @@ export default function AdminSubmissionDetail() {
         <div className="lg:col-span-2 space-y-6">
           <Card title="Answers">
             <dl className="grid gap-5 sm:grid-cols-2">
-              {submission.form.fields.map((f) => (
-                <div key={f.id}>
-                  <dt className="text-xs uppercase tracking-widest text-cocoa">{f.label}</dt>
-                  <dd className="mt-1 text-sm text-charcoal break-words whitespace-pre-wrap">
-                    {answerMap.get(f.id) || <span className="text-cocoa">—</span>}
-                  </dd>
-                </div>
-              ))}
+              {submission.form.fields.map((f) => {
+                // Section / subheading / paragraph fields don't store user
+                // input — render their label + helpText (terms text, clauses,
+                // intro copy etc.) as readable content spanning both columns.
+                if (f.type === 'section') {
+                  return (
+                    <div key={f.id} className="sm:col-span-2 mt-4 border-t border-beige/40 pt-4">
+                      {f.label && (
+                        <h3 className="text-base font-semibold text-charcoal">{f.label}</h3>
+                      )}
+                      {f.helpText && (
+                        <p className="mt-1 text-xs text-cocoa whitespace-pre-wrap">{f.helpText}</p>
+                      )}
+                    </div>
+                  );
+                }
+                if (f.type === 'subheading') {
+                  return (
+                    <div key={f.id} className="sm:col-span-2 mt-3">
+                      {f.label && (
+                        <h4 className="text-sm font-semibold text-charcoal">{f.label}</h4>
+                      )}
+                      {f.helpText && (
+                        <p className="mt-1 text-xs text-cocoa whitespace-pre-wrap">{f.helpText}</p>
+                      )}
+                    </div>
+                  );
+                }
+                if (f.type === 'paragraph') {
+                  return (
+                    <div key={f.id} className="sm:col-span-2">
+                      {f.label && (
+                        <p className="text-[10px] font-mono uppercase tracking-widest text-cocoa/70">
+                          {f.label}
+                        </p>
+                      )}
+                      <p className="mt-0.5 text-xs text-cocoa whitespace-pre-wrap">
+                        {f.helpText || <span className="text-cocoa/60">—</span>}
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={f.id}>
+                    <dt className="text-xs uppercase tracking-widest text-cocoa">{f.label}</dt>
+                    <dd className="mt-1 text-sm text-charcoal break-words whitespace-pre-wrap">
+                      {answerMap.get(f.id) || <span className="text-cocoa">—</span>}
+                    </dd>
+                  </div>
+                );
+              })}
             </dl>
           </Card>
 

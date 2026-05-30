@@ -54,7 +54,16 @@ export default function AdminImport() {
   // auto-fire if `autoImport` is on).
   useEffect(() => {
     if (!parsed || !formDetail) return;
-    const m = autoMapColumns(parsed.columns, formDetail.fields);
+    // Detect columns whose values are arrays (Cognito repeater attachments)
+    // so the mapper can route them to repeater fields rather than letting a
+    // scalar field with a colliding label swallow the payload.
+    const arrayColumns = new Set();
+    for (const r of parsed.rows) {
+      for (const [c, v] of Object.entries(r)) {
+        if (Array.isArray(v)) arrayColumns.add(c);
+      }
+    }
+    const m = autoMapColumns(parsed.columns, formDetail.fields, { arrayColumns });
     setMapping(m);
 
     // Auto-fire the import as soon as we have a mapping. If 0 columns mapped

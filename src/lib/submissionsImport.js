@@ -455,7 +455,7 @@ const STOPWORDS = new Set([
 // scorer, breaking ties by field-tokens count (prefers more specific matches).
 //
 // IMPORT_LIB_VERSION exposed so the UI can show which build is loaded.
-export const IMPORT_LIB_VERSION = 'v4-skip-sections-2026-05-30';
+export const IMPORT_LIB_VERSION = 'v5-array-repeater-idf-2026-05-30';
 
 // Display-only field types — show structure / instructions, never store user
 // data. Must be excluded from auto-mapping targets, otherwise high-token-overlap
@@ -464,9 +464,28 @@ export const IMPORT_LIB_VERSION = 'v4-skip-sections-2026-05-30';
 const DISPLAY_ONLY_TYPES = new Set(['section', 'subheading', 'paragraph']);
 const isMappableField = (f) => !DISPLAY_ONLY_TYPES.has(f?.type);
 
-function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
+// Build inverse-document-frequency weights for tokens across all mappable
+// form fields, so generic words like "address" / "number" / "contact" count
+// less than rare specific words like "state" / "postal" / "breed". Without
+// this, a 1-of-2 generic match ("Address" → "Email Address") would beat a
+// 1-of-3 specific match ("State" → "State / Province / Region").
+function buildIdf(formFields) {
+  const freq = new Map();
+  let n = 0;
+  for (const f of formFields) {
+    if (!isMappableField(f)) continue;
+    n += 1;
+    const ftokens = new Set([...tokens(f.label), ...tokens(f.fieldKey)]);
+    for (const t of ftokens) freq.set(t, (freq.get(t) || 0) + 1);
+  }
+  return (t) => Math.log((n + 1) / ((freq.get(t) || 0) + 1)) + 1;
+}
+
+function tokenOverlapMatch(colTokens, formFields, threshold = 0.3, idf) {
   if (colTokens.length === 0) return null;
   const colSet = new Set(colTokens);
+  const weight = idf || ((t) => 1);
+  const colWeightTotal = [...colSet].reduce((s, t) => s + weight(t), 0);
   let best = null;
   let bestScore = 0;
   let bestFieldTokens = Infinity;
@@ -474,10 +493,10 @@ function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
     if (!isMappableField(f)) continue;
     const fieldTokens = new Set([...tokens(f.label), ...tokens(f.fieldKey)]);
     if (fieldTokens.size === 0) continue;
-    let hits = 0;
-    for (const t of colSet) if (fieldTokens.has(t)) hits++;
-    if (hits === 0) continue;
-    const score = hits / Math.max(colSet.size, fieldTokens.size);
+    let hitWeight = 0;
+    for (const t of colSet) if (fieldTokens.has(t)) hitWeight += weight(t);
+    if (hitWeight === 0) continue;
+    const score = hitWeight / Math.max(colWeightTotal, [...fieldTokens].reduce((s, t) => s + weight(t), 0));
     if (score > bestScore || (score === bestScore && fieldTokens.size < bestFieldTokens)) {
       bestScore = score; best = f; bestFieldTokens = fieldTokens.size;
     }
@@ -485,7 +504,9 @@ function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
   return bestScore >= threshold ? best : null;
 }
 
-export function autoMapColumns(columns, formFields) {
+// Build the lookup indexes used by autoMapColumns over a given pool of fields.
+// Pulled out so we can build a separate repeater-only pool for array columns.
+function buildMapIndexes(fields) {
   const indexes = {
     keyExact: new Map(),
     keyLower: new Map(),
@@ -493,7 +514,7 @@ export function autoMapColumns(columns, formFields) {
     fuzzy: new Map(),
     fuzzySingular: new Map(),
   };
-  for (const f of formFields) {
+  for (const f of fields) {
     if (!isMappableField(f)) continue;
     const key = String(f.fieldKey || '');
     const label = String(f.label || '');
@@ -505,8 +526,26 @@ export function autoMapColumns(columns, formFields) {
     indexes.fuzzySingular.set(singularise(fuzzy(label)), f);
     indexes.fuzzySingular.set(singularise(fuzzy(key)), f);
   }
+  return indexes;
+}
 
-  function findMatch(t) {
+// opts.arrayColumns — a Set of column names whose values are arrays (e.g.
+// Cognito repeater attachments). These are restricted to repeater-type
+// fields so an array payload can't land in a scalar field with a matching
+// label (e.g. "Emergency Contact Person" scalar vs the real repeater).
+export function autoMapColumns(columns, formFields, opts = {}) {
+  const arrayColumns = opts.arrayColumns instanceof Set
+    ? opts.arrayColumns
+    : new Set(opts.arrayColumns || []);
+
+  const allIndexes = buildMapIndexes(formFields);
+  const idfAll = buildIdf(formFields);
+
+  const repeaterFields = formFields.filter((f) => f.type === 'repeater');
+  const repeaterIndexes = repeaterFields.length ? buildMapIndexes(repeaterFields) : null;
+  const idfRepeater = repeaterFields.length ? buildIdf(repeaterFields) : null;
+
+  function findMatch(t, indexes, candidates, idf) {
     const lo = t.toLowerCase();
     const fz = fuzzy(t);
     const fzs = singularise(fz);
@@ -518,17 +557,21 @@ export function autoMapColumns(columns, formFields) {
       || indexes.fuzzySingular.get(fz)
       || indexes.fuzzySingular.get(fzs)
       || (fz.length >= 5 ? substringMatch(fz, indexes) : null)
-      || tokenOverlapMatch(tokens(t), formFields);
+      || tokenOverlapMatch(tokens(t), candidates, 0.3, idf);
   }
 
   const mapping = {};
   for (const col of columns) {
     const t = String(col || '').trim();
+    const isArrayCol = arrayColumns.has(col);
+    const indexes = isArrayCol && repeaterIndexes ? repeaterIndexes : allIndexes;
+    const candidates = isArrayCol && repeaterIndexes ? repeaterFields : formFields;
+    const idf = isArrayCol && idfRepeater ? idfRepeater : idfAll;
     let match = null;
     // Try the full column, then progressively shorter suffixes (strip Cognito
     // section prefixes).
     for (const candidate of progressiveSuffixes(t)) {
-      match = findMatch(candidate);
+      match = findMatch(candidate, indexes, candidates, idf);
       if (match) break;
     }
     mapping[col] = match ? match.fieldKey : null;
@@ -557,17 +600,21 @@ export function findConsentFieldKeys(formFields) {
 export function extractAndReplicate(row, formFields) {
   if (!row || !formFields?.length) return {};
 
-  // Build label → [fieldKey…] groups. Sections/paragraphs are ignored —
-  // we only replicate to actual data-bearing fields.
+  // Build fuzzy-label → [fieldKey…] groups. Sections/paragraphs are ignored —
+  // we only replicate to actual data-bearing fields. Using fuzzy() (alphanum-
+  // only, lowercased) means "Dog's Name" and "Dog(s) Name" group together so
+  // setting one fills both — same for "Owner's Contact Number" siblings, etc.
   const labelGroups = new Map();
   const fieldByKey = new Map();
+  const labelFuzzyForKey = new Map();
   for (const f of formFields) {
     fieldByKey.set(f.fieldKey, f);
-    if (['section', 'subheading', 'paragraph'].includes(f.type)) continue;
-    const lc = String(f.label || '').trim().toLowerCase();
-    if (!lc) continue;
-    if (!labelGroups.has(lc)) labelGroups.set(lc, []);
-    labelGroups.get(lc).push(f);
+    if (DISPLAY_ONLY_TYPES.has(f.type)) continue;
+    const fz = fuzzy(f.label || '');
+    if (!fz) continue;
+    labelFuzzyForKey.set(f.fieldKey, fz);
+    if (!labelGroups.has(fz)) labelGroups.set(fz, []);
+    labelGroups.get(fz).push(f);
   }
 
   // Pull the first row of every JSON-encoded array value in `row`. These are
@@ -599,11 +646,9 @@ export function extractAndReplicate(row, formFields) {
       const v = repRow[subKey];
       setIfEmpty(fieldKey, v);
 
-      // Replicate to label siblings
-      const field = fieldByKey.get(fieldKey);
-      if (!field) continue;
-      const lc = String(field.label || '').trim().toLowerCase();
-      const siblings = labelGroups.get(lc) || [];
+      // Replicate to fuzzy-label siblings.
+      const fz = labelFuzzyForKey.get(fieldKey);
+      const siblings = fz ? labelGroups.get(fz) || [] : [];
       for (const sib of siblings) {
         if (sib.fieldKey === fieldKey) continue;
         setIfEmpty(sib.fieldKey, v);
@@ -613,12 +658,12 @@ export function extractAndReplicate(row, formFields) {
 
   // Also replicate values that ARE in the row to their label siblings — handles
   // the case where one section's "First" was mapped from the main sheet but the
-  // duplicate "First" on another section was left empty.
+  // duplicate "First" on another section was left empty. Skip values that look
+  // like JSON arrays — those belong only in repeaters, not in their siblings.
   for (const [fieldKey, value] of Object.entries(row)) {
-    const field = fieldByKey.get(fieldKey);
-    if (!field) continue;
-    const lc = String(field.label || '').trim().toLowerCase();
-    const siblings = labelGroups.get(lc) || [];
+    if (typeof value === 'string' && value.startsWith('[')) continue;
+    const fz = labelFuzzyForKey.get(fieldKey);
+    const siblings = fz ? labelGroups.get(fz) || [] : [];
     for (const sib of siblings) {
       if (sib.fieldKey === fieldKey) continue;
       setIfEmpty(sib.fieldKey, value);
