@@ -24,7 +24,17 @@ const META_COLUMNS = new Set([
 ]);
 
 function isMetaColumn(label) {
-  const norm = String(label || '').trim().toLowerCase();
+  if (!label) return true;
+  // Strip a leading "Entry_" / "Entry " prefix (Cognito's larger exports put
+  // submission metadata under columns like Entry_DateCreated, Entry_Status)
+  // and split camelCase so "DateSubmitted" → "date submitted" matches the set.
+  const norm = String(label).trim()
+    .replace(/^entry[_\s]+/i, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .trim();
   if (!norm) return true;
   return META_COLUMNS.has(norm);
 }
@@ -145,12 +155,15 @@ export function parseExcelSubmissions(buffer, opts = {}) {
   }
 
   // Now build the output columns + rows from the main sheet, with child
-  // attachments injected.
+  // attachments injected. Any column that's used as the child-attachment FK
+  // (e.g. "oldPawsome4PetsNewClientApplica_Id") is the Cognito entry number —
+  // it has no place on the new form, so treat it as meta.
+  const mainFkColumns = new Set(childAttachments.map((a) => a.mainFk));
   const columns = [];
   const ignoredMetaColumns = [];
   for (const c of main.columns) {
     if (!c) continue;
-    if (isMetaColumn(c)) { ignoredMetaColumns.push(c); continue; }
+    if (mainFkColumns.has(c) || isMetaColumn(c)) { ignoredMetaColumns.push(c); continue; }
     columns.push(c);
   }
   // Append child columns (e.g. "Owner", "Dog") at the end of the column list.
@@ -414,13 +427,23 @@ function progressiveSuffixes(col) {
 }
 
 // Substring match in either direction — covers cases like
-// "OwnersName_First" → form field labelled "Owner First Name".
+// "OwnersName_First" → form field labelled "Owner First Name". A coverage
+// threshold prevents short substring matches: "last" inside
+// "lastvaccinationdate" is only 21% of the column, which is way too weak
+// to claim it as a real match.
+const SUBSTRING_MIN_COVERAGE = 0.6;
 function substringMatch(fuzzyCol, indexes) {
+  let best = null;
+  let bestLen = 0;
   for (const [k, v] of indexes.fuzzy) {
-    if (!k) continue;
-    if (fuzzyCol.includes(k) || k.includes(fuzzyCol)) return v;
+    if (!k || k.length < 3) continue;
+    if (!(fuzzyCol.includes(k) || k.includes(fuzzyCol))) continue;
+    const shorter = Math.min(k.length, fuzzyCol.length);
+    const longer = Math.max(k.length, fuzzyCol.length);
+    if (shorter / longer < SUBSTRING_MIN_COVERAGE) continue;
+    if (k.length > bestLen) { best = v; bestLen = k.length; }
   }
-  return null;
+  return best;
 }
 
 // Tokenise on case boundaries, underscores, spaces, numbers. Lowercase everything.
@@ -438,6 +461,9 @@ function tokens(s) {
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with',
   'your', 'my', 'our', 'is', 'are', 'do', 'does', 'has', 'have',
+  // 'id' and 'doe' (singularised "does") match too many field tokens —
+  // an Excel "_Id" suffix should NOT bind every column to vet_owner_id.
+  'id', 'doe',
   // Cognito form-name prefixes we want to ignore
   'rainbowrequest', 'rainbow', 'request',
   'pawsome4pets', 'pawsome', 'pets', 'doghotel', 'spa', 'newclient', 'application', 'form',
@@ -455,7 +481,7 @@ const STOPWORDS = new Set([
 // scorer, breaking ties by field-tokens count (prefers more specific matches).
 //
 // IMPORT_LIB_VERSION exposed so the UI can show which build is loaded.
-export const IMPORT_LIB_VERSION = 'v5-array-repeater-idf-2026-05-30';
+export const IMPORT_LIB_VERSION = 'v8-strict-subkey-2026-05-30';
 
 // Display-only field types — show structure / instructions, never store user
 // data. Must be excluded from auto-mapping targets, otherwise high-token-overlap
@@ -529,23 +555,71 @@ function buildMapIndexes(fields) {
   return indexes;
 }
 
-// opts.arrayColumns — a Set of column names whose values are arrays (e.g.
-// Cognito repeater attachments). These are restricted to repeater-type
-// fields so an array payload can't land in a scalar field with a matching
-// label (e.g. "Emergency Contact Person" scalar vs the real repeater).
+// Cognito's per-tab/section naming prefix → the matching prefix our form
+// field keys use. When a column starts with one of these, we prefer fields
+// whose fieldKey starts with the corresponding prefix before considering
+// the rest of the form. Stops "RainbowRequest_OwnersName_First" from
+// matching gt_name_first via a plain "First" label lookup.
+const SECTION_HINTS = [
+  { match: 'rainbowrequest',             prefix: 'rr_'  },
+  { match: 'urgentveterinaryauthorisation', prefix: 'vet_' },
+  { match: 'boardingterms',              prefix: 'bt_'  },
+  { match: 'termsandconditions',         prefix: 'bt_'  },
+  { match: 'indemnities',                prefix: 'bt_'  },
+  { match: 'groomingterms',              prefix: 'gt_'  },
+];
+
+function sectionPrefixForColumn(col) {
+  const first = String(col || '').split(/[_\.\s]/)[0] || '';
+  const norm = fuzzy(first);
+  for (const hint of SECTION_HINTS) {
+    if (norm === hint.match) return hint.prefix;
+  }
+  return null;
+}
+
+// opts.arrayColumns — a Set of column names whose values are arrays (Cognito
+// repeater attachments). Array columns are restricted to repeater-type
+// fields; everything else is restricted to non-repeater fields. Without this
+// split, a long scalar column name like
+// "UrgentVeterinaryAuthorisation_OwnersName_First" matches the `owners`
+// repeater on "Owner" tokens and the per-section scalar (vet_owner_first)
+// never gets the value.
 export function autoMapColumns(columns, formFields, opts = {}) {
   const arrayColumns = opts.arrayColumns instanceof Set
     ? opts.arrayColumns
     : new Set(opts.arrayColumns || []);
 
-  const allIndexes = buildMapIndexes(formFields);
-  const idfAll = buildIdf(formFields);
-
   const repeaterFields = formFields.filter((f) => f.type === 'repeater');
-  const repeaterIndexes = repeaterFields.length ? buildMapIndexes(repeaterFields) : null;
-  const idfRepeater = repeaterFields.length ? buildIdf(repeaterFields) : null;
+  const scalarFields = formFields.filter((f) => f.type !== 'repeater');
 
-  function findMatch(t, indexes, candidates, idf) {
+  const repeaterIndexes = repeaterFields.length ? buildMapIndexes(repeaterFields) : null;
+  const scalarIndexes = scalarFields.length ? buildMapIndexes(scalarFields) : null;
+  const idfRepeater = repeaterFields.length ? buildIdf(repeaterFields) : null;
+  const idfScalar = scalarFields.length ? buildIdf(scalarFields) : null;
+
+  // Cache per-section sub-indexes lazily — most columns only touch a handful
+  // of sections so we don't pre-build all of them.
+  const scopedCache = new Map();
+  function scopedFor(prefix, basePool) {
+    const cacheKey = prefix + '|' + (basePool === repeaterFields ? 'r' : 's');
+    if (scopedCache.has(cacheKey)) return scopedCache.get(cacheKey);
+    const scoped = basePool.filter((f) => String(f.fieldKey || '').startsWith(prefix));
+    const built = scoped.length
+      ? { fields: scoped, indexes: buildMapIndexes(scoped), idf: buildIdf(scoped) }
+      : null;
+    scopedCache.set(cacheKey, built);
+    return built;
+  }
+
+  // Exact-style lookups (keyExact / keyLower / labelLower / fuzzy / singular).
+  // These must run on EVERY progressive suffix before any approximate match
+  // is tried — otherwise a substring hit on the full column name (e.g.
+  // "regularveterinaryclinic" inside the larger string) preempts the suffix
+  // exact match ("ContactNumberOfRegularVeterinaryClinic" → fuzzy hits
+  // vet_regular_clinic_phone exactly).
+  function findExactMatch(t, indexes) {
+    if (!indexes) return null;
     const lo = t.toLowerCase();
     const fz = fuzzy(t);
     const fzs = singularise(fz);
@@ -555,24 +629,51 @@ export function autoMapColumns(columns, formFields, opts = {}) {
       || indexes.fuzzy.get(fz)
       || indexes.fuzzy.get(fzs)
       || indexes.fuzzySingular.get(fz)
-      || indexes.fuzzySingular.get(fzs)
-      || (fz.length >= 5 ? substringMatch(fz, indexes) : null)
-      || tokenOverlapMatch(tokens(t), candidates, 0.3, idf);
+      || indexes.fuzzySingular.get(fzs);
+  }
+
+  const overlapThreshold = opts.threshold ?? 0.3;
+  function findApproxMatch(t, indexes, candidates, idf) {
+    if (!indexes || !candidates?.length) return null;
+    const fz = fuzzy(t);
+    return (fz.length >= 5 ? substringMatch(fz, indexes) : null)
+      || tokenOverlapMatch(tokens(t), candidates, overlapThreshold, idf);
   }
 
   const mapping = {};
   for (const col of columns) {
     const t = String(col || '').trim();
     const isArrayCol = arrayColumns.has(col);
-    const indexes = isArrayCol && repeaterIndexes ? repeaterIndexes : allIndexes;
-    const candidates = isArrayCol && repeaterIndexes ? repeaterFields : formFields;
-    const idf = isArrayCol && idfRepeater ? idfRepeater : idfAll;
+    const basePool = isArrayCol ? repeaterFields : scalarFields;
+    const baseIndexes = isArrayCol ? repeaterIndexes : scalarIndexes;
+    const baseIdf = isArrayCol ? idfRepeater : idfScalar;
+    const sectionPrefix = sectionPrefixForColumn(col);
+    const scoped = sectionPrefix ? scopedFor(sectionPrefix, basePool) : null;
+
     let match = null;
-    // Try the full column, then progressively shorter suffixes (strip Cognito
-    // section prefixes).
-    for (const candidate of progressiveSuffixes(t)) {
-      match = findMatch(candidate, indexes, candidates, idf);
-      if (match) break;
+    // Phase 1a: exact-style match within the section-scoped pool first
+    // (e.g. RainbowRequest_* → only rr_* fields).
+    if (scoped) {
+      for (const candidate of progressiveSuffixes(t)) {
+        match = findExactMatch(candidate, scoped.indexes);
+        if (match) break;
+      }
+    }
+    // Phase 1b: exact-style match across the full pool of the right kind
+    // (scalar or repeater) if scoped match didn't land.
+    if (!match) {
+      for (const candidate of progressiveSuffixes(t)) {
+        match = findExactMatch(candidate, baseIndexes);
+        if (match) break;
+      }
+    }
+    // Phase 2a: approximate match within section-scoped pool.
+    if (!match && scoped) {
+      match = findApproxMatch(t, scoped.indexes, scoped.fields, scoped.idf);
+    }
+    // Phase 2b: approximate match across the full pool.
+    if (!match) {
+      match = findApproxMatch(t, baseIndexes, basePool, baseIdf);
     }
     mapping[col] = match ? match.fieldKey : null;
   }
@@ -638,9 +739,17 @@ export function extractAndReplicate(row, formFields) {
   };
 
   for (const repRow of repeaterFirstRows) {
-    const subKeys = Object.keys(repRow);
+    // Strip Cognito's internal FK / housekeeping sub-keys before mapping —
+    // they're meaningless to the new form and otherwise leak into scalar
+    // fields (e.g. DogsInformation_Id ended up in rr_dog_name).
+    const subKeys = Object.keys(repRow).filter((k) => !/_id$/i.test(k) && k.toLowerCase() !== 'id');
     if (!subKeys.length) continue;
-    const subMapping = autoMapColumns(subKeys, formFields);
+    // Strict threshold for sub-key matching — a wrong guess on a sub-field
+    // (e.g. LastVaccinationDate → gt_name_last) cascades through label
+    // replication and corrupts every "Last" field on the form. Better to
+    // leave the field blank and let the user fill it manually if the
+    // repeater JSON has the value.
+    const subMapping = autoMapColumns(subKeys, formFields, { threshold: 0.55 });
     for (const [subKey, fieldKey] of Object.entries(subMapping)) {
       if (!fieldKey) continue;
       const v = repRow[subKey];

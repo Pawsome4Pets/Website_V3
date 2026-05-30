@@ -538,10 +538,30 @@ router.get('/submissions',
   query('formId').optional().isInt(),
   query('limit').optional().isInt({ min: 1, max: 200 }),
   query('offset').optional().isInt({ min: 0 }),
+  query('q').optional().isString().isLength({ max: 200 }),
   handleValidation,
   async (req, res, next) => {
     try {
-      const where = req.query.formId ? { formId: Number(req.query.formId) } : {};
+      const q = String(req.query.q || '').trim();
+      const where = {
+        ...(req.query.formId ? { formId: Number(req.query.formId) } : {}),
+        // Free-text search across submission answers (owner name, dog name,
+        // email, phone, anything stored in a SubmissionAnswer.value). Also
+        // matches the user's email/name if the submission was linked to one,
+        // and the literal submission id so admins can paste an id from PDF
+        // exports. MySQL LIKE %term% on an indexed answer.value column scales
+        // fine for the volumes we expect (low thousands).
+        ...(q
+          ? {
+              OR: [
+                ...(/^\d+$/.test(q) ? [{ id: Number(q) }] : []),
+                { answers: { some: { value: { contains: q } } } },
+                { user: { email: { contains: q } } },
+                { user: { name: { contains: q } } },
+              ],
+            }
+          : {}),
+      };
       const take = Math.min(Number(req.query.limit) || 50, 200);
       const skip = Math.max(Number(req.query.offset) || 0, 0);
       const [submissions, total] = await Promise.all([
