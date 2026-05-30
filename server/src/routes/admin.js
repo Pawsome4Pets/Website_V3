@@ -575,6 +575,7 @@ router.get('/submissions/:id',
         },
       });
       if (!submission) return res.status(404).json({ error: 'Submission not found' });
+      submission.form.fields = submission.form.fields.map(decodeField);
       res.json({ submission });
     } catch (err) { next(err); }
   },

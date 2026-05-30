@@ -114,6 +114,9 @@ export default function AdminSubmissionDetail() {
                     </div>
                   );
                 }
+                if (f.type === 'repeater') {
+                  return <RepeaterAnswer key={f.id} field={f} value={answerMap.get(f.id)} />;
+                }
                 return (
                   <div key={f.id}>
                     <dt className="text-xs uppercase tracking-widest text-cocoa">{f.label}</dt>
@@ -193,5 +196,73 @@ export default function AdminSubmissionDetail() {
         </aside>
       </div>
     </>
+  );
+}
+
+// Render a repeater answer as a card per record with key:value rows. The
+// stored value is a JSON string (array of sub-records). We try to label each
+// sub-key against the repeater's defined sub-fields; for imported data
+// (Cognito) the keys won't match so we fall back to humanising the raw key
+// (OwnerName_First → "Owner Name First"). Cognito's auto-generated FK
+// (suffix _Id) is hidden as noise.
+function RepeaterAnswer({ field, value }) {
+  if (!value) {
+    return (
+      <div>
+        <dt className="text-xs uppercase tracking-widest text-cocoa">{field.label}</dt>
+        <dd className="mt-1 text-sm text-cocoa">—</dd>
+      </div>
+    );
+  }
+  let records = null;
+  try { records = JSON.parse(value); } catch { /* fall through */ }
+  if (!Array.isArray(records) || records.length === 0) {
+    return (
+      <div className="sm:col-span-2">
+        <dt className="text-xs uppercase tracking-widest text-cocoa">{field.label}</dt>
+        <dd className="mt-1 text-sm text-charcoal break-words whitespace-pre-wrap">{String(value)}</dd>
+      </div>
+    );
+  }
+
+  const subLabel = new Map();
+  for (const sf of (field.options?.fields || [])) {
+    if (sf?.fieldKey && sf?.label) subLabel.set(sf.fieldKey, sf.label);
+  }
+  const humanize = (k) => String(k)
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^./, (c) => c.toUpperCase());
+
+  return (
+    <div className="sm:col-span-2">
+      <dt className="text-xs uppercase tracking-widest text-cocoa">{field.label}</dt>
+      <dd className="mt-2 space-y-3">
+        {records.map((rec, i) => (
+          <div key={i} className="rounded-xl border border-beige/60 bg-cream/40 p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-cocoa">
+              {field.label}{records.length > 1 ? ` #${i + 1}` : ''}
+            </p>
+            <dl className="mt-2 grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+              {Object.entries(rec || {}).map(([k, v]) => {
+                if (v == null || v === '') return null;
+                if (/_id$/i.test(k)) return null;
+                const label = subLabel.get(k) || humanize(k);
+                const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                return (
+                  <div key={k}>
+                    <dt className="text-[10px] uppercase tracking-widest text-cocoa/80">{label}</dt>
+                    <dd className="text-xs text-charcoal break-words">{display}</dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </div>
+        ))}
+      </dd>
+    </div>
   );
 }
