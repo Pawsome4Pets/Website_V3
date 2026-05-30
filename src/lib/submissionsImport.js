@@ -481,7 +481,7 @@ const STOPWORDS = new Set([
 // scorer, breaking ties by field-tokens count (prefers more specific matches).
 //
 // IMPORT_LIB_VERSION exposed so the UI can show which build is loaded.
-export const IMPORT_LIB_VERSION = 'v11-per-row-tx-2026-05-30';
+export const IMPORT_LIB_VERSION = 'v12-cli-fallback-2026-05-30';
 
 // Display-only field types — show structure / instructions, never store user
 // data. Must be excluded from auto-mapping targets, otherwise high-token-overlap

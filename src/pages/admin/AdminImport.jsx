@@ -202,7 +202,13 @@ export default function AdminImport() {
       // 60s, and our rows include repeater JSON that can be a few KB each).
       // 25 rows keeps each POST under ~1mb (Vercel's serverless body limit
       // is 4.5mb) and well within the timeout.
-      const CHUNK_SIZE = 25;
+      // 5-row chunks. Tiny on purpose: each Vercel function call now does
+      // ~2.5s of DB work (5 rows × 2 queries × 250ms latency), well under
+      // every timeout the platform throws at us. For 400+ row imports use
+      // the CLI script (server/scripts/migrate-submissions-to-prod.js)
+      // which talks to Afrihost directly from your laptop and finishes in
+      // ~30s instead of ~7 minutes via Vercel.
+      const CHUNK_SIZE = 5;
       let totalCreated = 0;
       let totalAnswers = 0;
       let totalSkipped = 0;
@@ -259,8 +265,14 @@ export default function AdminImport() {
         title="Import submissions"
         subtitle="Bring legacy form responses across — pick a target form, upload Excel or JSON, then map the columns."
       />
-      <p className="-mt-4 mb-6 text-[10px] font-mono text-cocoa/60">
+      <p className="-mt-4 mb-2 text-[10px] font-mono text-cocoa/60">
         Import engine: {IMPORT_LIB_VERSION}
+      </p>
+      <p className="mb-6 text-xs text-cocoa">
+        Files with more than ~100 rows: run{' '}
+        <span className="font-mono">node server/scripts/migrate-submissions-to-prod.js</span>{' '}
+        from your laptop instead — it bypasses Vercel's 60-second function limit and
+        finishes 405 rows in about half a minute.
       </p>
 
       {error && (
