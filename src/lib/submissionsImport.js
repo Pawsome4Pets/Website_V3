@@ -455,7 +455,14 @@ const STOPWORDS = new Set([
 // scorer, breaking ties by field-tokens count (prefers more specific matches).
 //
 // IMPORT_LIB_VERSION exposed so the UI can show which build is loaded.
-export const IMPORT_LIB_VERSION = 'v3-aggressive-2026-05-29';
+export const IMPORT_LIB_VERSION = 'v4-skip-sections-2026-05-30';
+
+// Display-only field types — show structure / instructions, never store user
+// data. Must be excluded from auto-mapping targets, otherwise high-token-overlap
+// section labels (e.g. "Owner's Information" / "Dog's Information") win against
+// the actual repeater fields ("Owner" / "Dog") and swallow the JSON payload.
+const DISPLAY_ONLY_TYPES = new Set(['section', 'subheading', 'paragraph']);
+const isMappableField = (f) => !DISPLAY_ONLY_TYPES.has(f?.type);
 
 function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
   if (colTokens.length === 0) return null;
@@ -464,6 +471,7 @@ function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
   let bestScore = 0;
   let bestFieldTokens = Infinity;
   for (const f of formFields) {
+    if (!isMappableField(f)) continue;
     const fieldTokens = new Set([...tokens(f.label), ...tokens(f.fieldKey)]);
     if (fieldTokens.size === 0) continue;
     let hits = 0;
@@ -486,6 +494,7 @@ export function autoMapColumns(columns, formFields) {
     fuzzySingular: new Map(),
   };
   for (const f of formFields) {
+    if (!isMappableField(f)) continue;
     const key = String(f.fieldKey || '');
     const label = String(f.label || '');
     indexes.keyExact.set(key, f);
