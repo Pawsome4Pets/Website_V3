@@ -155,7 +155,35 @@ export default function AdminImport() {
       }
 
       if (rows.length === 0) {
-        setError('No rows to import after mapping — make sure at least one column is mapped to a field.');
+        // Surface useful diagnostics. Every row coming out empty almost
+        // always means the auto-mapper bound to columns that have no data
+        // on the file's main sheet — different export structure, summary
+        // sheet that became 'main', or unfamiliar column names.
+        const mappedEntries = Object.entries(mapToUse).filter(([, v]) => v);
+        const firstRow = parsed.rows[0] || {};
+        const allKeys = new Set();
+        for (const r of parsed.rows.slice(0, 5)) for (const k of Object.keys(r)) allKeys.add(k);
+        const samples = mappedEntries.slice(0, 8).map(([col, fk]) => {
+          const v = firstRow[col];
+          const summary = v == null || v === '' ? '(empty)'
+            : Array.isArray(v) ? `(array, ${v.length} item${v.length === 1 ? '' : 's'})`
+            : typeof v === 'object' ? '(object)'
+            : `"${String(v).replace(/\s+/g, ' ').slice(0, 40)}"`;
+          return `  • ${col} → ${fk}: ${summary}`;
+        }).join('\n');
+        const extraNote = mappedEntries.length > 8 ? `\n  …and ${mappedEntries.length - 8} more mapped column${mappedEntries.length - 8 === 1 ? '' : 's'}.` : '';
+        const firstRowKeys = Object.keys(firstRow);
+        const firstRowSample = firstRowKeys.length
+          ? `\n\nFirst row has data in these columns: ${firstRowKeys.slice(0, 10).join(', ')}${firstRowKeys.length > 10 ? `, …(+${firstRowKeys.length - 10})` : ''}.`
+          : '\n\nFirst row is completely empty.';
+        setError(
+          `No rows to import after mapping. ${parsed.rows.length} row${parsed.rows.length === 1 ? '' : 's'} parsed, ` +
+          `${mappedEntries.length} column${mappedEntries.length === 1 ? '' : 's'} mapped, but the mapped columns had no values on any row.\n\n` +
+          `First-row samples of mapped columns:\n${samples}${extraNote}${firstRowSample}\n\n` +
+          `Loaded source: ${parsed.sourceLabel}\n\n` +
+          `Likely fixes: (1) turn off Auto-import and review the mapping table below, ` +
+          `or (2) check that the workbook's first sheet is the one with the actual entries — Cognito sometimes prepends a summary sheet.`
+        );
         setImporting(false);
         return;
       }
@@ -189,7 +217,7 @@ export default function AdminImport() {
       </p>
 
       {error && (
-        <div className="mb-6 rounded-xl border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
+        <div className="mb-6 rounded-xl border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral whitespace-pre-wrap">
           {error}
         </div>
       )}
