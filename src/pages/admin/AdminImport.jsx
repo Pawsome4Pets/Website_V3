@@ -48,6 +48,7 @@ export default function AdminImport() {
   const [importing, setImporting] = useState(false);
   const [autoImport, setAutoImport] = useState(true);   // skip mapping review and import immediately
   const [autoTriggered, setAutoTriggered] = useState(false);
+  const [progress, setProgress] = useState(null);       // { done, total } while importing
 
   // Auto-build a default mapping once both the form's fields and a parsed file
   // are available. The user can refine it before clicking Import (or let it
@@ -196,21 +197,48 @@ export default function AdminImport() {
         setImporting(false);
         return;
       }
-      const result = await apiFetch(`/admin/forms/${formId}/submissions/bulk`, {
-        method: 'POST',
-        body: { rows },
-      });
+      // Chunk client-side. The bulk endpoint is happy with up to ~50 rows
+      // per call (latency to Afrihost is ~250ms, Vercel's function cap is
+      // 60s, and our rows include repeater JSON that can be a few KB each).
+      // 25 rows keeps each POST under ~1mb (Vercel's serverless body limit
+      // is 4.5mb) and well within the timeout.
+      const CHUNK_SIZE = 25;
+      let totalCreated = 0;
+      let totalAnswers = 0;
+      let totalSkipped = 0;
+      const failures = [];
+      setProgress({ done: 0, total: rows.length });
+      for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+        const slice = rows.slice(i, i + CHUNK_SIZE);
+        try {
+          const result = await apiFetch(`/admin/forms/${formId}/submissions/bulk`, {
+            method: 'POST',
+            body: { rows: slice },
+          });
+          totalCreated += result.created || 0;
+          totalAnswers += result.answersCreated || 0;
+          totalSkipped += result.skipped || 0;
+        } catch (chunkErr) {
+          failures.push({ from: i + 1, to: i + slice.length, message: chunkErr.message });
+        }
+        setProgress({ done: Math.min(i + CHUNK_SIZE, rows.length), total: rows.length });
+      }
       const consentNote = consentKeys.length
         ? ` ${consentKeys.length} consent field${consentKeys.length === 1 ? '' : 's'} auto-checked.`
         : '';
-      setSuccess(
-        `Imported ${result.created} submission${result.created === 1 ? '' : 's'} into "${formDetail.title}" ` +
-        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${result.answersCreated} answers stored, ${result.skipped} rows skipped).${consentNote}`,
-      );
+      const failNote = failures.length
+        ? ` ${failures.length} chunk${failures.length === 1 ? '' : 's'} failed: ` +
+          failures.map((f) => `rows ${f.from}–${f.to} (${f.message})`).join('; ')
+        : '';
+      const msg =
+        `Imported ${totalCreated} submission${totalCreated === 1 ? '' : 's'} into "${formDetail.title}" ` +
+        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${totalAnswers} answers stored, ${totalSkipped} rows skipped).${consentNote}${failNote}`;
+      if (failures.length && totalCreated === 0) setError(msg); else setSuccess(msg);
     } catch (err) {
       setError(err.message);
     } finally {
       setImporting(false);
+      setProgress(null);
     }
   };
 
@@ -228,6 +256,24 @@ export default function AdminImport() {
       {error && (
         <div className="mb-6 rounded-xl border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral whitespace-pre-wrap">
           {error}
+        </div>
+      )}
+      {progress && (
+        <div className="mb-6 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-cocoa">
+          <div className="flex items-center justify-between">
+            <span>
+              Importing {progress.done.toLocaleString()} / {progress.total.toLocaleString()} row{progress.total === 1 ? '' : 's'}…
+            </span>
+            <span className="font-mono text-xs">
+              {Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-beige/50">
+            <div
+              className="h-full bg-gold transition-all duration-200"
+              style={{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }}
+            />
+          </div>
         </div>
       )}
       {success && (

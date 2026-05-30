@@ -53,7 +53,10 @@ app.use(
   }),
 );
 
-app.use(express.json({ limit: '1mb' }));
+// 4mb keeps us just below Vercel's 4.5mb serverless body cap. The bulk-
+// submissions import is the only path that pushes anywhere near this; the
+// frontend also chunks rows so a single call stays under ~1mb in practice.
+app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: true }));
 if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) app.use(morgan('dev'));
 
