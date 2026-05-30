@@ -207,6 +207,7 @@ export default function AdminImport() {
       let totalAnswers = 0;
       let totalSkipped = 0;
       const failures = [];
+      const rowErrorSamples = [];
       setProgress({ done: 0, total: rows.length });
       for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
         const slice = rows.slice(i, i + CHUNK_SIZE);
@@ -218,6 +219,12 @@ export default function AdminImport() {
           totalCreated += result.created || 0;
           totalAnswers += result.answersCreated || 0;
           totalSkipped += result.skipped || 0;
+          if (result.rowErrors?.length && rowErrorSamples.length < 5) {
+            for (const m of result.rowErrors) {
+              if (rowErrorSamples.length >= 5) break;
+              if (!rowErrorSamples.includes(m)) rowErrorSamples.push(m);
+            }
+          }
         } catch (chunkErr) {
           failures.push({ from: i + 1, to: i + slice.length, message: chunkErr.message });
         }
@@ -230,9 +237,12 @@ export default function AdminImport() {
         ? ` ${failures.length} chunk${failures.length === 1 ? '' : 's'} failed: ` +
           failures.map((f) => `rows ${f.from}–${f.to} (${f.message})`).join('; ')
         : '';
+      const rowErrNote = rowErrorSamples.length
+        ? `\n\nSample row errors:\n${rowErrorSamples.map((m) => '  • ' + m).join('\n')}`
+        : '';
       const msg =
         `Imported ${totalCreated} submission${totalCreated === 1 ? '' : 's'} into "${formDetail.title}" ` +
-        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${totalAnswers} answers stored, ${totalSkipped} rows skipped).${consentNote}${failNote}`;
+        `(${localMappedCount}/${parsed.columns.length} columns auto-mapped, ${totalAnswers} answers stored, ${totalSkipped} rows skipped).${consentNote}${failNote}${rowErrNote}`;
       if (failures.length && totalCreated === 0) setError(msg); else setSuccess(msg);
     } catch (err) {
       setError(err.message);
@@ -277,7 +287,7 @@ export default function AdminImport() {
         </div>
       )}
       {success && (
-        <div className="mb-6 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-cocoa">
+        <div className="mb-6 rounded-xl border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-cocoa whitespace-pre-wrap">
           {success}
         </div>
       )}

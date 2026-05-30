@@ -634,6 +634,13 @@ router.delete('/submissions/:id',
 // Body: { rows: [ { [fieldKey]: value, ... }, ... ] }
 // Resolves each fieldKey to a field on the form, creates one FormSubmission
 // per row plus the SubmissionAnswer rows, and returns counts.
+//
+// IMPORTANT: each row runs in its OWN small transaction (one
+// formSubmission.create + one submissionAnswer.createMany). Wrapping the
+// whole chunk in a single transaction blows past Prisma's default 5s
+// timeout against Afrihost MySQL (~250ms per query × 25-50 rows × 2
+// queries each = 12-25s). Per-row TX keeps each one well under 1s.
+// A failure on any single row is isolated to that row.
 router.post('/forms/:id/submissions/bulk',
   param('id').isInt(),
   body('rows').isArray({ min: 1, max: 5000 }),
@@ -645,7 +652,10 @@ router.post('/forms/:id/submissions/bulk',
         where: { id: formId },
         include: { fields: { select: { id: true, fieldKey: true } } },
       });
-      if (!form) return res.status(404).json({ error: 'Form not found' });
+      if (!form) {
+        console.warn(`[bulk import] form ${formId} not found`);
+        return res.status(404).json({ error: `Form ${formId} not found` });
+      }
 
       const fieldByKey = new Map(form.fields.map((f) => [f.fieldKey, f.id]));
       const rows = req.body.rows;
@@ -653,36 +663,45 @@ router.post('/forms/:id/submissions/bulk',
       let created = 0;
       let skipped = 0;
       let answersCreated = 0;
+      const rowErrors = [];
 
-      // Chunk to keep the transaction size sane (Afrihost MySQL likes smaller TXs).
-      const CHUNK = 50;
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const slice = rows.slice(i, i + CHUNK);
-        await prisma.$transaction(async (tx) => {
-          for (const row of slice) {
-            if (!row || typeof row !== 'object') { skipped++; continue; }
-            const entries = Object.entries(row)
-              .filter(([k, v]) => fieldByKey.has(k) && v !== undefined && v !== null && String(v).trim() !== '');
-            if (entries.length === 0) { skipped++; continue; }
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || typeof row !== 'object') { skipped++; continue; }
+        const entries = Object.entries(row)
+          .filter(([k, v]) => fieldByKey.has(k) && v !== undefined && v !== null && String(v).trim() !== '');
+        if (entries.length === 0) { skipped++; continue; }
 
-            const submission = await tx.formSubmission.create({
-              data: {
-                formId,
-                status: 'submitted',
-                ipAddress: req.ip,
-                userAgent: 'bulk-import',
-              },
-            });
-            const answers = entries.map(([k, v]) => ({
-              submissionId: submission.id,
-              fieldId: fieldByKey.get(k),
-              value: String(v).slice(0, 65_000),
-            }));
-            await tx.submissionAnswer.createMany({ data: answers });
-            created += 1;
-            answersCreated += answers.length;
-          }
-        });
+        try {
+          await prisma.$transaction(
+            async (tx) => {
+              const submission = await tx.formSubmission.create({
+                data: {
+                  formId,
+                  status: 'submitted',
+                  ipAddress: (req.ip || '').slice(0, 100),
+                  userAgent: 'bulk-import',
+                },
+              });
+              const answers = entries.map(([k, v]) => ({
+                submissionId: submission.id,
+                fieldId: fieldByKey.get(k),
+                value: String(v).slice(0, 65_000),
+              }));
+              await tx.submissionAnswer.createMany({ data: answers });
+            },
+            // Generous per-row timeout — Afrihost latency from Vercel fra1
+            // is sometimes spiky, and createMany with ~25 answer rows can
+            // take a few seconds on a bad ping. Default 5s is too tight.
+            { timeout: 15_000, maxWait: 5_000 },
+          );
+          created += 1;
+          answersCreated += entries.length;
+        } catch (rowErr) {
+          skipped += 1;
+          if (rowErrors.length < 5) rowErrors.push(rowErr.message || String(rowErr));
+          console.error(`[bulk import] row ${i} failed:`, rowErr.message);
+        }
       }
 
       await logActivity({
@@ -690,12 +709,22 @@ router.post('/forms/:id/submissions/bulk',
         action: 'submission.bulkImport',
         entityType: 'form',
         entityId: formId,
-        metadata: { received: rows.length, created, skipped, answersCreated },
+        metadata: { received: rows.length, created, skipped, answersCreated, rowErrors },
         ipAddress: req.ip,
       });
 
-      res.json({ ok: true, received: rows.length, created, skipped, answersCreated });
-    } catch (err) { next(err); }
+      res.json({
+        ok: true,
+        received: rows.length,
+        created,
+        skipped,
+        answersCreated,
+        ...(rowErrors.length ? { rowErrors } : {}),
+      });
+    } catch (err) {
+      console.error('[bulk import] fatal:', err);
+      next(err);
+    }
   },
 );
 
