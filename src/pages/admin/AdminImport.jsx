@@ -88,7 +88,10 @@ export default function AdminImport() {
   const onFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError(''); setSuccess(''); setParsed(null); setMapping({});
+    // Reset auto-trigger so a fresh upload always re-fires the auto-import.
+    // Without this, uploading a second file after a prior import (or a prior
+    // error) leaves autoTriggered=true and only the manual button works.
+    setError(''); setSuccess(''); setParsed(null); setMapping({}); setAutoTriggered(false);
     try {
       const lower = file.name.toLowerCase();
       let result;
@@ -119,9 +122,15 @@ export default function AdminImport() {
   };
 
   // Accept an explicit mapping arg so the auto-fire path can pass the freshly
-  // computed mapping without waiting for the setState commit.
+  // computed mapping without waiting for the setState commit. Defend against
+  // being called from an onClick handler — React passes the SyntheticEvent in
+  // as the first arg, which would otherwise be treated as the mapping and
+  // produce gibberish "mapped columns" like _reactName / nativeEvent.
+  const looksLikeMapping = (m) =>
+    m && typeof m === 'object'
+    && !('nativeEvent' in m) && !('_reactName' in m) && !('currentTarget' in m);
   const runImport = async (mapOverride) => {
-    const mapToUse = mapOverride || mapping;
+    const mapToUse = looksLikeMapping(mapOverride) ? mapOverride : mapping;
     if (!formId || !parsed) return;
     const localMappedCount = Object.values(mapToUse).filter(Boolean).length;
     if (localMappedCount === 0) {
@@ -397,7 +406,7 @@ export default function AdminImport() {
               </button>
               <Button
                 type="button"
-                onClick={runImport}
+                onClick={() => runImport()}
                 disabled={importing || !formId || !parsed || mappedCount === 0}
               >
                 {importing ? 'Importing…' : `Import ${parsed.rows.length} submission${parsed.rows.length === 1 ? '' : 's'}`}
