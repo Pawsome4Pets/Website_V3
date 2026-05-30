@@ -438,14 +438,26 @@ function tokens(s) {
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with',
   'your', 'my', 'our', 'is', 'are', 'do', 'does', 'has', 'have',
-  'rainbowrequest', 'rainbow', 'request',  // form-name prefixes
+  // Cognito form-name prefixes we want to ignore
+  'rainbowrequest', 'rainbow', 'request',
   'pawsome4pets', 'pawsome', 'pets', 'doghotel', 'spa', 'newclient', 'application', 'form',
+  'veterinaryauthorisation', 'veterinary', 'authorisation', 'authorization',
+  'boardingterms', 'boarding', 'groomingterms', 'grooming',
+  'termsandconditions', 'termsconditions',
+  // Two-letter section codes used in our form's fieldKeys — strip so they
+  // don't drown out the actual field tokens (rr/vet/bt/gt are noise once we
+  // already know which section we're in).
+  'rr', 'vet', 'bt', 'gt', 'svc',
 ]);
 
 // Token-overlap match. Score = |intersection| / max(|col tokens|, |field tokens|).
 // Only returns a match if the best score is > threshold. Picks the highest
 // scorer, breaking ties by field-tokens count (prefers more specific matches).
-function tokenOverlapMatch(colTokens, formFields, threshold = 0.45) {
+//
+// IMPORT_LIB_VERSION exposed so the UI can show which build is loaded.
+export const IMPORT_LIB_VERSION = 'v3-aggressive-2026-05-29';
+
+function tokenOverlapMatch(colTokens, formFields, threshold = 0.3) {
   if (colTokens.length === 0) return null;
   const colSet = new Set(colTokens);
   let best = null;

@@ -10,6 +10,7 @@ import {
   autoMapColumns,
   remapRows,
   findConsentFieldKeys,
+  IMPORT_LIB_VERSION,
 } from '../../lib/submissionsImport';
 
 const inputCls =
@@ -162,6 +163,9 @@ export default function AdminImport() {
         title="Import submissions"
         subtitle="Bring legacy form responses across — pick a target form, upload Excel or JSON, then map the columns."
       />
+      <p className="-mt-4 mb-6 text-[10px] font-mono text-cocoa/60">
+        Import engine: {IMPORT_LIB_VERSION}
+      </p>
 
       {error && (
         <div className="mb-6 rounded-xl border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
