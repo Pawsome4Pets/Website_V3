@@ -537,6 +537,88 @@ export function findConsentFieldKeys(formFields) {
     .map((f) => f.fieldKey);
 }
 
+// After a row is remapped, pull values from any JSON-encoded repeater arrays
+// (Owner / Dog / Emergency Contact / etc.) and use them to populate scalar form
+// fields whose labels match. Then replicate every populated field to its label
+// siblings — so "First" / "Last" / "Email" / "Signature" appear on every
+// section of the form, not just the first one that matched.
+//
+// Returns ONLY the new values that should be merged into the row; never
+// overwrites existing values.
+export function extractAndReplicate(row, formFields) {
+  if (!row || !formFields?.length) return {};
+
+  // Build label → [fieldKey…] groups. Sections/paragraphs are ignored —
+  // we only replicate to actual data-bearing fields.
+  const labelGroups = new Map();
+  const fieldByKey = new Map();
+  for (const f of formFields) {
+    fieldByKey.set(f.fieldKey, f);
+    if (['section', 'subheading', 'paragraph'].includes(f.type)) continue;
+    const lc = String(f.label || '').trim().toLowerCase();
+    if (!lc) continue;
+    if (!labelGroups.has(lc)) labelGroups.set(lc, []);
+    labelGroups.get(lc).push(f);
+  }
+
+  // Pull the first row of every JSON-encoded array value in `row`. These are
+  // repeater sub-records — typical Cognito Owner / Dog / Emergency Contact.
+  const repeaterFirstRows = [];
+  for (const [, v] of Object.entries(row)) {
+    if (typeof v !== 'string') continue;
+    let parsed;
+    try { parsed = JSON.parse(v); } catch { continue; }
+    if (!Array.isArray(parsed) || parsed.length === 0) continue;
+    if (parsed[0] && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
+      repeaterFirstRows.push(parsed[0]);
+    }
+  }
+
+  const out = {};
+  const setIfEmpty = (fieldKey, value) => {
+    if (out[fieldKey] != null || row[fieldKey] != null) return;
+    if (value == null || value === '') return;
+    out[fieldKey] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  };
+
+  for (const repRow of repeaterFirstRows) {
+    const subKeys = Object.keys(repRow);
+    if (!subKeys.length) continue;
+    const subMapping = autoMapColumns(subKeys, formFields);
+    for (const [subKey, fieldKey] of Object.entries(subMapping)) {
+      if (!fieldKey) continue;
+      const v = repRow[subKey];
+      setIfEmpty(fieldKey, v);
+
+      // Replicate to label siblings
+      const field = fieldByKey.get(fieldKey);
+      if (!field) continue;
+      const lc = String(field.label || '').trim().toLowerCase();
+      const siblings = labelGroups.get(lc) || [];
+      for (const sib of siblings) {
+        if (sib.fieldKey === fieldKey) continue;
+        setIfEmpty(sib.fieldKey, v);
+      }
+    }
+  }
+
+  // Also replicate values that ARE in the row to their label siblings — handles
+  // the case where one section's "First" was mapped from the main sheet but the
+  // duplicate "First" on another section was left empty.
+  for (const [fieldKey, value] of Object.entries(row)) {
+    const field = fieldByKey.get(fieldKey);
+    if (!field) continue;
+    const lc = String(field.label || '').trim().toLowerCase();
+    const siblings = labelGroups.get(lc) || [];
+    for (const sib of siblings) {
+      if (sib.fieldKey === fieldKey) continue;
+      setIfEmpty(sib.fieldKey, value);
+    }
+  }
+
+  return out;
+}
+
 // Translate `rows` (keyed by column label) into rows keyed by fieldKey using
 // the mapping. Drops columns mapped to null. Arrays/objects (repeater data,
 // nested structures) are JSON-stringified so the bulk-submission endpoint can

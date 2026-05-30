@@ -10,6 +10,7 @@ import {
   autoMapColumns,
   remapRows,
   findConsentFieldKeys,
+  extractAndReplicate,
   IMPORT_LIB_VERSION,
 } from '../../lib/submissionsImport';
 
@@ -122,9 +123,20 @@ export default function AdminImport() {
     try {
       let rows = remapRows(parsed.rows, mapToUse).filter((r) => Object.keys(r).length > 0);
 
+      // Pull sub-field values out of Cognito's repeater sheets (Owner / Dog /
+      // Emergency Contact / etc.) and use them to populate matching scalar
+      // fields on the new form. Also replicates each populated value to every
+      // field that shares the same label — so "First" / "Last" / "Signature"
+      // get filled in on every section, not just the first.
+      const formFields = formDetail?.fields || [];
+      rows = rows.map((r) => {
+        const extra = extractAndReplicate(r, formFields);
+        return { ...extra, ...r }; // existing values win over extracted
+      });
+
       // T&C / consent fields: original submitter already accepted these on
       // the source platform, so auto-tick them on every imported row.
-      const consentKeys = findConsentFieldKeys(formDetail?.fields || []);
+      const consentKeys = findConsentFieldKeys(formFields);
       if (consentKeys.length) {
         rows = rows.map((r) => {
           const next = { ...r };
