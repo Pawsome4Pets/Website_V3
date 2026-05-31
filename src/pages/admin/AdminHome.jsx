@@ -4,7 +4,7 @@ import SEO from '../../components/SEO';
 import PageHeader from '../../components/admin/PageHeader';
 import StatCard from '../../components/admin/StatCard';
 import Card from '../../components/admin/Card';
-import { apiFetch, getToken } from '../../lib/api';
+import { apiFetch } from '../../lib/api';
 
 export default function AdminHome() {
   const [data, setData] = useState(null);
@@ -16,12 +16,17 @@ export default function AdminHome() {
 
   useEffect(() => { load(); }, []);
 
-  const handleClear = async () => {
-    if (!window.confirm('Mark all submitted forms as reviewed?')) return;
+  const handleClearLog = async () => {
     setClearing(true);
     try {
-      await apiFetch('/admin/submissions/mark-all-reviewed', { method: 'POST' });
-      await load(); // refresh counts + recent list
+      // Store the current moment as the "cleared at" marker.
+      // The stats endpoint will only return submissions newer than this.
+      await apiFetch('/admin/settings/dashboard.recentSubmissionsClearedAt', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: new Date().toISOString() }),
+      });
+      await load();
     } catch (e) {
       alert(e.message);
     } finally {
@@ -29,10 +34,7 @@ export default function AdminHome() {
     }
   };
 
-  // Submissions sorted: submitted first (status desc), then createdAt desc.
-  // Show up to 5; split so submitted rows get a coral badge, reviewed get gold.
-  const recent = data?.recentSubmissions?.slice(0, 5) ?? [];
-  const submittedCount = recent.filter((s) => s.status === 'submitted').length;
+  const recent = data?.recentSubmissions ?? [];
 
   return (
     <>
@@ -54,13 +56,14 @@ export default function AdminHome() {
           title="Recent submissions"
           action={
             <div className="flex items-center gap-3">
-              {submittedCount > 0 && (
+              {recent.length > 0 && (
                 <button
-                  onClick={handleClear}
+                  onClick={handleClearLog}
                   disabled={clearing}
+                  title="Hides these entries from the log. Does not delete submissions."
                   className="rounded-full border border-charcoal/25 bg-white/70 px-3 py-1 text-xs font-semibold text-charcoal transition-colors hover:border-coral hover:text-coral disabled:opacity-50"
                 >
-                  {clearing ? 'Clearing…' : `Clear ${submittedCount} submitted`}
+                  {clearing ? 'Clearing…' : 'Clear log'}
                 </button>
               )}
               <Link to="/admin/submissions" className="text-sm font-semibold text-coral hover:underline">
@@ -71,7 +74,7 @@ export default function AdminHome() {
         >
           {recent.length ? (
             <ul className="divide-y divide-beige/40">
-              {recent.map((s) => (
+              {recent.slice(0, 5).map((s) => (
                 <li key={s.id} className="flex items-center justify-between py-3">
                   <div>
                     <Link to={`/admin/submissions/${s.id}`} className="font-medium text-charcoal hover:text-coral">
@@ -90,7 +93,7 @@ export default function AdminHome() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-cocoa">No submissions yet.</p>
+            <p className="text-sm text-cocoa">No new submissions since the log was last cleared.</p>
           )}
         </Card>
       </div>

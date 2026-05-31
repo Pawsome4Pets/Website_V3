@@ -19,7 +19,7 @@ const handleValidation = (req, res, next) => {
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 router.get('/stats', async (_req, res, next) => {
   try {
-    const [users, admins, forms, submissions, since] = await Promise.all([
+    const [users, admins, forms, submissions, since, clearedSetting] = await Promise.all([
       prisma.user.count(),
       prisma.adminUser.count(),
       prisma.form.count(),
@@ -27,11 +27,15 @@ router.get('/stats', async (_req, res, next) => {
       prisma.formSubmission.count({
         where: { createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
       }),
+      prisma.setting.findUnique({ where: { key: 'dashboard.recentSubmissionsClearedAt' } }),
     ]);
+
+    const clearedAt = clearedSetting?.value ? new Date(clearedSetting.value) : null;
 
     const recentSubmissions = await prisma.formSubmission.findMany({
       take: 10,
       orderBy: [{ status: 'desc' }, { createdAt: 'desc' }],
+      where: clearedAt ? { createdAt: { gt: clearedAt } } : {},
       include: { form: { select: { title: true, slug: true } } },
     });
 
