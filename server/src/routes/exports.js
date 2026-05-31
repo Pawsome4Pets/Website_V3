@@ -84,11 +84,56 @@ function renderField(doc, field, rawValue) {
 
   // Scalar field (text, radio, checkbox, date, tel, email, file, etc.)
   doc.fontSize(9).fillColor('#666').text(label || '');
+
+  // File-reference values (stored as JSON or plain URL) render as the
+  // filename + a hyperlink instead of the raw `{"id":..,"originalName":..}`
+  // string.
+  const fileMeta = pdfParseFileValue(rawValue);
+  if (fileMeta) {
+    const linkColor = '#c14a3b';
+    doc.fontSize(10).fillColor(linkColor)
+      .text(fileMeta.originalName || 'View file', {
+        link: fileMeta.url || (fileMeta.id != null ? `${process.env.RESET_URL_BASE || ''}/api/uploads/${fileMeta.id}` : null),
+        underline: true,
+      });
+    doc.fillColor('#111');
+    doc.moveDown(0.45);
+    return;
+  }
+
   const display = rawValue
     ? (rawValue === 'true' || rawValue === 'I Agree' ? 'I Agree' : String(rawValue))
     : '—';
   doc.fontSize(10).fillColor('#111').text(display);
   doc.moveDown(0.45);
+}
+
+// Mirror of the frontend parseFileAnswer + extractFileFromText.
+function pdfParseFileValue(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const first = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (first && typeof first === 'object' && (first.id != null || first.url || first.storagePath)) {
+        return {
+          id: first.id,
+          url: first.url || (/^https?:\/\//i.test(first.storagePath || '') ? first.storagePath : null),
+          originalName: first.originalName || 'file',
+        };
+      }
+    } catch { /* fall through to regex */ }
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { url: trimmed, originalName: trimmed.split('/').pop() || trimmed };
+  }
+  const idMatch = trimmed.match(/"id"\s*:\s*(\d+)/);
+  const nameMatch = trimmed.match(/"originalName"\s*:\s*"([^"]+)"/);
+  if (idMatch) {
+    return { id: Number(idMatch[1]), originalName: nameMatch ? nameMatch[1] : 'file' };
+  }
+  return null;
 }
 
 function writePdfSubmission(doc, submission, isFirst) {
