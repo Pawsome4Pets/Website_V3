@@ -131,23 +131,41 @@ export default function AdminSubmissionDetail() {
 
           {submission.fileUploads?.length > 0 && (
             <Card title="Files">
-              <ul className="space-y-2">
-                {submission.fileUploads.map((file) => (
-                  <li key={file.id} className="flex items-center justify-between rounded-xl bg-cream/60 px-3 py-2">
-                    <div>
-                      <p className="text-sm font-medium text-charcoal">{file.originalName}</p>
-                      <p className="text-xs text-cocoa">{(file.sizeBytes / 1024).toFixed(1)} KB · {file.mimeType}</p>
-                    </div>
-                    <a
-                      href={`/api/uploads/${file.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm font-semibold text-coral hover:underline"
-                    >
-                      Open
-                    </a>
-                  </li>
-                ))}
+              <ul className="space-y-3">
+                {submission.fileUploads.map((file) => {
+                  const isImage = (file.mimeType || '').startsWith('image/');
+                  const href = `/api/uploads/${file.id}`;
+                  return (
+                    <li key={file.id} className="flex items-center gap-3 rounded-xl bg-cream/60 px-3 py-2">
+                      {isImage ? (
+                        <a href={href} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                          <img
+                            src={href}
+                            alt={file.originalName}
+                            loading="lazy"
+                            className="h-16 w-16 rounded-lg object-cover ring-1 ring-beige/60 hover:ring-coral"
+                          />
+                        </a>
+                      ) : (
+                        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-beige/40 text-[10px] font-semibold uppercase tracking-widest text-cocoa">
+                          {(file.mimeType || '').split('/')[1]?.slice(0, 4) || 'FILE'}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-charcoal">{file.originalName}</p>
+                        <p className="text-xs text-cocoa">{(file.sizeBytes / 1024).toFixed(1)} KB · {file.mimeType}</p>
+                      </div>
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="shrink-0 text-sm font-semibold text-coral hover:underline"
+                      >
+                        Open
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             </Card>
           )}
