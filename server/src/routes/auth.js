@@ -366,10 +366,11 @@ router.post('/forgot-password',
       // Send the reset email when SMTP is configured. Otherwise fall back to
       // logging the link so dev/local setups still work.
       let emailSent = false;
+      let mailError = null;
       if (mailerConfigured()) {
         const niceName = subject.name || 'there';
         try {
-          await sendMail({
+          const info = await sendMail({
             to: email,
             subject: 'Reset your Pawsome 4 Pets password',
             text:
@@ -391,19 +392,32 @@ If you didn't request this, you can safely ignore this email.
 <p style="color:#888;font-size:12px">If the button doesn't work, copy this URL into your browser:<br><span style="font-family:monospace">${resetUrl}</span></p>`,
           });
           emailSent = true;
+          console.log('[forgot-password] sent', { to: email, messageId: info?.messageId, response: info?.response });
         } catch (mailErr) {
-          // Log but don't expose the failure to the requester (would leak account existence).
-          console.error('[forgot-password] sendMail failed:', mailErr.message);
+          mailError = mailErr.message || String(mailErr);
+          console.error('[forgot-password] sendMail failed:', mailError, mailErr.stack);
         }
       } else if (process.env.NODE_ENV !== 'production') {
         console.log(`[forgot-password] ${userKind} ${email} → ${resetUrl}`);
+      } else {
+        console.warn('[forgot-password] mailer not configured', {
+          host: !!process.env.SMTP_HOST,
+          user: !!process.env.SMTP_USER,
+          pass: !!process.env.SMTP_PASS,
+        });
       }
 
       await logActivity({
         userId: userKind === 'user' ? subject.id : undefined,
         adminId: userKind === 'admin' ? subject.id : undefined,
         action: 'auth.forgotPassword',
-        metadata: { emailSent, mailerConfigured: mailerConfigured() },
+        metadata: {
+          emailSent,
+          mailerConfigured: mailerConfigured(),
+          ...(mailError ? { mailError } : {}),
+          envHost: process.env.SMTP_HOST ? process.env.SMTP_HOST : '<missing>',
+          envUser: process.env.SMTP_USER ? process.env.SMTP_USER : '<missing>',
+        },
         ipAddress: req.ip,
       });
 
