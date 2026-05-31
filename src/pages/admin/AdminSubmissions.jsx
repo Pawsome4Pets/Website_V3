@@ -10,6 +10,7 @@ const PAGE_SIZES = [25, 50, 100, 200];
 export default function AdminSubmissions() {
   const [params, setParams] = useSearchParams();
   const formId = params.get('formId') || '';
+  const statusFilter = params.get('status') || '';
   const initialSearch = params.get('q') || '';
   const page = Math.max(1, Number(params.get('page') || '1'));
   const pageSize = PAGE_SIZES.includes(Number(params.get('limit')))
@@ -46,12 +47,13 @@ export default function AdminSubmissions() {
     const qs = new URLSearchParams();
     if (formId) qs.set('formId', formId);
     if (debouncedSearch) qs.set('q', debouncedSearch);
+    if (statusFilter) qs.set('status', statusFilter);
     qs.set('limit', String(pageSize));
     qs.set('offset', String((page - 1) * pageSize));
     apiFetch(`/admin/submissions?${qs.toString()}`)
       .then(setData)
       .finally(() => setLoading(false));
-  }, [formId, debouncedSearch, page, pageSize]);
+  }, [formId, statusFilter, debouncedSearch, page, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
 
@@ -154,10 +156,28 @@ export default function AdminSubmissions() {
       <Card>
         <div className="flex flex-wrap items-center gap-3">
           <select
+            value={statusFilter}
+            onChange={(e) => {
+              const next = new URLSearchParams(params);
+              next.delete('page');
+              if (e.target.value) next.set('status', e.target.value); else next.delete('status');
+              setParams(next);
+            }}
+            className="rounded-xl border border-beige bg-white/70 px-3 py-2 text-sm text-charcoal outline-none focus:border-coral focus:ring-2 focus:ring-coral/20"
+          >
+            <option value="">All statuses</option>
+            <option value="submitted">Submitted</option>
+            <option value="reviewed">Reviewed</option>
+            <option value="archived">Archived</option>
+          </select>
+          <select
             value={formId}
             onChange={(e) => {
               const v = e.target.value;
-              if (v) setParams({ formId: v }); else setParams({});
+              const next = new URLSearchParams(params);
+              next.delete('page');
+              if (v) next.set('formId', v); else next.delete('formId');
+              setParams(next);
             }}
             className="rounded-xl border border-beige bg-white/70 px-3 py-2 text-sm text-charcoal outline-none focus:border-coral focus:ring-2 focus:ring-coral/20"
           >

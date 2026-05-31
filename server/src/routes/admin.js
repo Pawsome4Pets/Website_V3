@@ -539,12 +539,14 @@ router.get('/submissions',
   query('limit').optional().isInt({ min: 1, max: 200 }),
   query('offset').optional().isInt({ min: 0 }),
   query('q').optional().isString().isLength({ max: 200 }),
+  query('status').optional().isString().isIn(['submitted', 'reviewed', 'archived']),
   handleValidation,
   async (req, res, next) => {
     try {
       const q = String(req.query.q || '').trim();
       const where = {
         ...(req.query.formId ? { formId: Number(req.query.formId) } : {}),
+        ...(req.query.status ? { status: req.query.status } : {}),
         // Free-text search across submission answers (owner name, dog name,
         // email, phone, anything stored in a SubmissionAnswer.value). Also
         // matches the user's email/name if the submission was linked to one,
