@@ -386,6 +386,39 @@ function RepeaterAnswer({ field, value }) {
                 if (v == null || v === '') return null;
                 if (/_id$/i.test(k)) return null;
                 const label = subLabel.get(k) || humanize(k);
+                // Sub-fields can hold file references — render thumbnails
+                // here so repeated dogs / owners show their uploads inline.
+                const fileMeta = parseFileAnswer(v) ||
+                  (typeof v === 'string' ? extractFileFromText(v) : null);
+                if (fileMeta) {
+                  return (
+                    <div key={k} className="sm:col-span-2">
+                      <dt className="text-[10px] uppercase tracking-widest text-cocoa/80">{label}</dt>
+                      <dd className="mt-1 flex flex-wrap gap-2">
+                        {fileMeta.map((f, i) => {
+                          const isImage = (f.mimeType || '').startsWith('image/') ||
+                            /\.(png|jpe?g|gif|webp|svg)$/i.test(f.originalName || '');
+                          const href = f.url || (f.id != null ? `/api/uploads/${f.id}` : null);
+                          if (!href) return <span key={i} className="text-xs text-cocoa">{f.originalName}</span>;
+                          return (
+                            <a key={f.id ?? f.url ?? i} href={href} target="_blank" rel="noopener noreferrer"
+                               className="flex items-center gap-2 rounded-lg bg-white/70 px-2 py-1 ring-1 ring-beige/40 hover:ring-coral">
+                              {isImage ? (
+                                <img src={href} alt={f.originalName} loading="lazy"
+                                     className="h-12 w-12 rounded object-cover" />
+                              ) : (
+                                <span className="text-[9px] font-semibold uppercase tracking-widest text-cocoa">
+                                  {(f.mimeType || '').split('/')[1]?.slice(0, 4) || 'FILE'}
+                                </span>
+                              )}
+                              <span className="max-w-[140px] truncate text-[11px] text-charcoal">{f.originalName}</span>
+                            </a>
+                          );
+                        })}
+                      </dd>
+                    </div>
+                  );
+                }
                 const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
                 return (
                   <div key={k}>
