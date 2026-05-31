@@ -118,7 +118,10 @@ export default function AdminSubmissionDetail() {
                   return <RepeaterAnswer key={f.id} field={f} value={answerMap.get(f.id)} />;
                 }
                 const raw = answerMap.get(f.id);
-                const fileMeta = parseFileAnswer(raw);
+                // Treat file/upload-typed fields and any value that parses as
+                // a file-reference object the same way: render a thumbnail.
+                const isFileField = /^(file|upload|fileupload|image|photo|attachment)$/i.test(f.type || '');
+                const fileMeta = parseFileAnswer(raw) || (isFileField && raw ? extractFileFromText(raw) : null);
                 if (fileMeta) {
                   return <FileAnswer key={f.id} field={f} file={fileMeta} />;
                 }
@@ -228,17 +231,57 @@ export default function AdminSubmissionDetail() {
 // Parse a SubmissionAnswer.value that came from a file upload field. The
 // public submit endpoint stores file references as JSON ({id, originalName,
 // mimeType, sizeBytes}) — sometimes as an array of those for multi-file
-// fields. Returns an array of file metas, or null if the value isn't a
-// file reference.
+// fields. Imported submissions may also store a direct URL or a different
+// shape. Returns an array of file metas, or null.
 function parseFileAnswer(raw) {
-  if (!raw || typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
-  let parsed;
-  try { parsed = JSON.parse(trimmed); } catch { return null; }
-  const list = Array.isArray(parsed) ? parsed : [parsed];
-  const files = list.filter((f) => f && typeof f === 'object' && Number.isInteger(f.id) && typeof f.originalName === 'string');
+  if (!raw) return null;
+  let val = raw;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    // Try JSON first
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try { val = JSON.parse(trimmed); } catch { /* fall through */ }
+    } else if (/^https?:\/\//i.test(trimmed)) {
+      // Plain URL (e.g. imported Cognito file URL) — render as a link/image.
+      const name = trimmed.split('/').pop() || trimmed;
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      const isImg = ['png','jpg','jpeg','gif','webp','svg'].includes(ext);
+      return [{ url: trimmed, originalName: name, mimeType: isImg ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : '' }];
+    } else {
+      return null;
+    }
+  }
+  if (!val || typeof val !== 'object') return null;
+  const list = Array.isArray(val) ? val : [val];
+  const files = list
+    .filter((f) => f && typeof f === 'object' && (f.id != null || f.url || f.storagePath) && (f.originalName || f.url || f.storagePath))
+    .map((f) => ({
+      id: f.id,
+      url: f.url || (/^https?:\/\//i.test(f.storagePath || '') ? f.storagePath : null),
+      originalName: f.originalName || (f.url || f.storagePath || '').split('/').pop() || 'file',
+      mimeType: f.mimeType || '',
+      sizeBytes: f.sizeBytes,
+    }));
   return files.length ? files : null;
+}
+
+// Last-ditch extractor: regex-grab id/originalName/url from arbitrary text
+// so a stored value that's almost-but-not-quite JSON still renders.
+function extractFileFromText(raw) {
+  const text = typeof raw === 'string' ? raw : String(raw ?? '');
+  const idMatch = text.match(/"id"\s*:\s*(\d+)/);
+  const nameMatch = text.match(/"originalName"\s*:\s*"([^"]+)"/);
+  const mimeMatch = text.match(/"mimeType"\s*:\s*"([^"]+)"/);
+  const sizeMatch = text.match(/"sizeBytes"\s*:\s*(\d+)/);
+  const urlMatch = text.match(/https?:\/\/\S+/);
+  if (!idMatch && !urlMatch) return null;
+  return [{
+    id: idMatch ? Number(idMatch[1]) : undefined,
+    url: urlMatch ? urlMatch[0] : undefined,
+    originalName: nameMatch ? nameMatch[1] : (urlMatch ? urlMatch[0].split('/').pop() : 'file'),
+    mimeType: mimeMatch ? mimeMatch[1] : '',
+    sizeBytes: sizeMatch ? Number(sizeMatch[1]) : undefined,
+  }];
 }
 
 function FileAnswer({ field, file: files }) {
@@ -246,12 +289,20 @@ function FileAnswer({ field, file: files }) {
     <div className="sm:col-span-2">
       <dt className="text-xs uppercase tracking-widest text-cocoa">{field.label}</dt>
       <dd className="mt-2 flex flex-wrap gap-3">
-        {files.map((f) => {
-          const isImage = (f.mimeType || '').startsWith('image/');
-          const href = `/api/uploads/${f.id}`;
+        {files.map((f, i) => {
+          const isImage = (f.mimeType || '').startsWith('image/') ||
+            /\.(png|jpe?g|gif|webp|svg)$/i.test(f.originalName || '');
+          const href = f.url || (f.id != null ? `/api/uploads/${f.id}` : null);
+          if (!href) {
+            return (
+              <div key={i} className="rounded-xl bg-cream/60 px-3 py-2 text-xs text-cocoa">
+                {f.originalName || 'File reference'}
+              </div>
+            );
+          }
           return (
             <a
-              key={f.id}
+              key={f.id ?? f.url ?? i}
               href={href}
               target="_blank"
               rel="noopener noreferrer"
@@ -271,7 +322,9 @@ function FileAnswer({ field, file: files }) {
               )}
               <div className="min-w-0 max-w-[200px]">
                 <p className="truncate text-sm font-medium text-charcoal">{f.originalName}</p>
-                <p className="text-xs text-cocoa">{(f.sizeBytes / 1024).toFixed(1)} KB</p>
+                {typeof f.sizeBytes === 'number' && (
+                  <p className="text-xs text-cocoa">{(f.sizeBytes / 1024).toFixed(1)} KB</p>
+                )}
               </div>
             </a>
           );
