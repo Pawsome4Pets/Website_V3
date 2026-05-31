@@ -175,10 +175,13 @@ export default function AdminSubmissionDetail() {
             </div>
           </Card>
 
-          {submission.user && (
+          {(submission.user || submission.submittedEmail) && (
             <Card title="User">
-              <p className="text-sm font-medium text-charcoal">{submission.user.name || '—'}</p>
-              <p className="text-sm text-cocoa">{submission.user.email}</p>
+              <p className="text-sm font-medium text-charcoal">{submission.user?.name || '—'}</p>
+              <p className="text-sm text-cocoa">{submission.user?.email || submission.submittedEmail}</p>
+              {!submission.user && submission.submittedEmail && (
+                <p className="mt-1 text-[10px] uppercase tracking-widest text-cocoa/70">From form (no linked account)</p>
+              )}
             </Card>
           )}
 

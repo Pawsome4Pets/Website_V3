@@ -23,8 +23,7 @@ export default function AdminHome() {
       // The stats endpoint will only return submissions newer than this.
       await apiFetch('/admin/settings/dashboard.recentSubmissionsClearedAt', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: new Date().toISOString() }),
+        body: { value: new Date().toISOString() },
       });
       await load();
     } catch (e) {
@@ -56,7 +55,7 @@ export default function AdminHome() {
           title="Recent submissions"
           action={
             <div className="flex items-center gap-3">
-              {recent.length > 0 && (
+              {data && (
                 <button
                   onClick={handleClearLog}
                   disabled={clearing}

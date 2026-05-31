@@ -130,33 +130,34 @@ router.post('/forms/:slug/submit',
       const missing = form.fields.filter((f) => f.isRequired && isMissing(f)).map((f) => f.label);
       if (missing.length) return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
 
-      // Optional auto-account creation if the form is configured for it
+      // Link the submission to a user when the form provides an email.
+      // Always link to an existing user with that email so the admin views
+      // can attribute submissions correctly. Auto-create a real account only
+      // when the form is flagged for it.
       let userId = null;
       let createdUser = null;
       let tempPassword = null;
-      if (form.createsAccount) {
-        const email = pickEmail(form, answers);
-        if (email) {
-          const existing = await prisma.user.findUnique({ where: { email } });
-          if (existing) {
-            userId = existing.id;
-          } else {
-            tempPassword = crypto.randomBytes(9).toString('base64url');
-            const role = await prisma.role.findUnique({ where: { name: 'user' } });
-            const passwordHash = await bcrypt.hash(tempPassword, Number(process.env.BCRYPT_ROUNDS || 12));
-            createdUser = await prisma.user.create({
-              data: {
-                email,
-                passwordHash,
-                name: pickName(form, answers),
-                surname: pickSurname(form, answers),
-                phone: pickPhone(form, answers),
-                roleId: role?.id ?? null,
-              },
-              select: { id: true, email: true, name: true },
-            });
-            userId = createdUser.id;
-          }
+      const email = pickEmail(form, answers);
+      if (email) {
+        const existing = await prisma.user.findUnique({ where: { email } });
+        if (existing) {
+          userId = existing.id;
+        } else if (form.createsAccount) {
+          tempPassword = crypto.randomBytes(9).toString('base64url');
+          const role = await prisma.role.findUnique({ where: { name: 'user' } });
+          const passwordHash = await bcrypt.hash(tempPassword, Number(process.env.BCRYPT_ROUNDS || 12));
+          createdUser = await prisma.user.create({
+            data: {
+              email,
+              passwordHash,
+              name: pickName(form, answers),
+              surname: pickSurname(form, answers),
+              phone: pickPhone(form, answers),
+              roleId: role?.id ?? null,
+            },
+            select: { id: true, email: true, name: true },
+          });
+          userId = createdUser.id;
         }
       }
 

@@ -274,7 +274,7 @@ export default function AdminSubmissions() {
                     <td className="py-3 pr-4">
                       <Link to={`/admin/submissions/${s.id}`} className="font-medium hover:text-coral">{s.form?.title}</Link>
                     </td>
-                    <td className="py-3 pr-4 text-cocoa">{s.user?.email || '—'}</td>
+                    <td className="py-3 pr-4 text-cocoa">{s.user?.email || s.submittedEmail || '—'}</td>
                     <td className="py-3 pr-4">
                       <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider ${
                         s.status === 'reviewed' ? 'bg-gold/20 text-gold' :

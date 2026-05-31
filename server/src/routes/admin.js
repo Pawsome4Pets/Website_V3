@@ -589,11 +589,30 @@ router.get('/submissions',
           include: {
             form: { select: { id: true, title: true, slug: true } },
             user: { select: { id: true, email: true, name: true } },
+            answers: {
+              where: {
+                OR: [
+                  { field: { type: 'email' } },
+                  { field: { fieldKey: { contains: 'email' } } },
+                  { field: { label: { contains: 'mail' } } },
+                ],
+              },
+              select: { value: true, field: { select: { type: true, fieldKey: true, label: true } } },
+            },
           },
         }),
         prisma.formSubmission.count({ where }),
       ]);
-      res.json({ submissions, total });
+      // Derive submittedEmail from answers when the submission isn't already
+      // linked to a user. Pick the first answer whose value looks like an
+      // email — protects against accidental matches on label-only hits.
+      const isEmail = (v) => typeof v === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+      const enriched = submissions.map((s) => {
+        const submittedEmail = s.user?.email || s.answers?.find((a) => isEmail(a.value))?.value || null;
+        const { answers: _drop, ...rest } = s;
+        return { ...rest, submittedEmail };
+      });
+      res.json({ submissions: enriched, total });
     } catch (err) { next(err); }
   },
 );
@@ -614,6 +633,12 @@ router.get('/submissions/:id',
       });
       if (!submission) return res.status(404).json({ error: 'Submission not found' });
       submission.form.fields = submission.form.fields.map(decodeField);
+      const isEmail = (v) => typeof v === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+      submission.submittedEmail = submission.user?.email ||
+        submission.answers.find((a) => isEmail(a.value) &&
+          (a.field?.type === 'email' || /email|mail/i.test(`${a.field?.fieldKey} ${a.field?.label}`)))?.value ||
+        submission.answers.find((a) => isEmail(a.value))?.value ||
+        null;
       res.json({ submission });
     } catch (err) { next(err); }
   },
