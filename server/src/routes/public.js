@@ -149,6 +149,7 @@ router.post('/forms/:slug/submit',
                 email,
                 passwordHash,
                 name: pickName(form, answers),
+                surname: pickSurname(form, answers),
                 phone: pickPhone(form, answers),
                 roleId: role?.id ?? null,
               },
@@ -213,13 +214,17 @@ function pickEmail(form, answers) {
 }
 
 function pickName(form, answers) {
-  const f = form.fields.find((x) => /^(full[ _-]?)?name$/i.test(x.fieldKey) || /^(full[ _-]?)?name$/i.test(x.label));
-  if (f && answers[f.fieldKey]) return String(answers[f.fieldKey]).slice(0, 120);
-  // Try first + last
+  // Prefer an explicit first-name field; fall back to a "full name" field.
   const first = form.fields.find((x) => /first|given/i.test(x.fieldKey + x.label));
-  const last  = form.fields.find((x) => /last|surname|family/i.test(x.fieldKey + x.label));
-  const composed = [first && answers[first.fieldKey], last && answers[last.fieldKey]].filter(Boolean).join(' ').trim();
-  return composed ? composed.slice(0, 120) : null;
+  if (first && answers[first.fieldKey]) return String(answers[first.fieldKey]).slice(0, 120);
+  const full = form.fields.find((x) => /^(full[ _-]?)?name$/i.test(x.fieldKey) || /^(full[ _-]?)?name$/i.test(x.label));
+  return full && answers[full.fieldKey] ? String(answers[full.fieldKey]).slice(0, 120) : null;
+}
+
+function pickSurname(form, answers) {
+  const last = form.fields.find((x) => /last|surname|family/i.test(x.fieldKey + x.label));
+  const v = last ? answers[last.fieldKey] : null;
+  return v ? String(v).slice(0, 120) : null;
 }
 
 function pickPhone(form, answers) {

@@ -5,10 +5,17 @@ import PageHeader from '../../components/admin/PageHeader';
 import Card from '../../components/admin/Card';
 import { apiFetch, getToken } from '../../lib/api';
 
+const PAGE_SIZES = [25, 50, 100, 200];
+
 export default function AdminSubmissions() {
   const [params, setParams] = useSearchParams();
   const formId = params.get('formId') || '';
   const initialSearch = params.get('q') || '';
+  const page = Math.max(1, Number(params.get('page') || '1'));
+  const pageSize = PAGE_SIZES.includes(Number(params.get('limit')))
+    ? Number(params.get('limit'))
+    : 50;
+
   const [forms, setForms] = useState([]);
   const [data, setData] = useState({ submissions: [], total: 0 });
   const [loading, setLoading] = useState(true);
@@ -18,18 +25,18 @@ export default function AdminSubmissions() {
     apiFetch('/admin/forms').then((d) => setForms(d.forms)).catch(() => {});
   }, []);
 
-  // Debounce the search input so each keystroke doesn't hit the server. 250ms
-  // feels instant and keeps the answers-LIKE query rate-limited.
+  // Debounce the search input so each keystroke doesn't hit the server.
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => clearTimeout(t);
   }, [search]);
 
-  // Reflect the search term in the URL so refresh / bookmark keeps the filter.
+  // Sync search to URL and reset to page 1 whenever the term changes.
   useEffect(() => {
     const next = new URLSearchParams(params);
     if (debouncedSearch) next.set('q', debouncedSearch); else next.delete('q');
+    next.delete('page');
     if (next.toString() !== params.toString()) setParams(next, { replace: true });
   }, [debouncedSearch]);
 
@@ -38,15 +45,27 @@ export default function AdminSubmissions() {
     const qs = new URLSearchParams();
     if (formId) qs.set('formId', formId);
     if (debouncedSearch) qs.set('q', debouncedSearch);
-    const suffix = qs.toString();
-    apiFetch(`/admin/submissions${suffix ? `?${suffix}` : ''}`)
+    qs.set('limit', String(pageSize));
+    qs.set('offset', String((page - 1) * pageSize));
+    apiFetch(`/admin/submissions?${qs.toString()}`)
       .then(setData)
       .finally(() => setLoading(false));
-  }, [formId, debouncedSearch]);
+  }, [formId, debouncedSearch, page, pageSize]);
 
-  // Server already filtered — keep a thin client filter only as a fallback
-  // for status (status isn't searchable server-side and is cheap locally).
-  const filtered = data.submissions;
+  const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
+
+  const goToPage = (n) => {
+    const next = new URLSearchParams(params);
+    if (n === 1) next.delete('page'); else next.set('page', String(n));
+    setParams(next);
+  };
+
+  const changePageSize = (n) => {
+    const next = new URLSearchParams(params);
+    next.delete('page');
+    if (n === 50) next.delete('limit'); else next.set('limit', String(n));
+    setParams(next);
+  };
 
   const download = (path, filename, errLabel) => {
     fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } })
@@ -70,6 +89,9 @@ export default function AdminSubmissions() {
     if (!formId) { alert('Pick a specific form to export.'); return; }
     download(`/api/exports/forms/${formId}/submissions.pdf`, `submissions-form-${formId}.pdf`, 'PDF export');
   };
+
+  const firstRow = (page - 1) * pageSize + 1;
+  const lastRow = Math.min(page * pageSize, data.total);
 
   return (
     <>
@@ -114,18 +136,23 @@ export default function AdminSubmissions() {
           </button>
         </div>
 
-        {debouncedSearch && !loading && (
+        {!loading && data.total > 0 && (
           <p className="mt-3 text-xs text-cocoa">
-            {data.total === 0
-              ? <>No submissions match <span className="font-mono">"{debouncedSearch}"</span>.</>
-              : <>{data.total} submission{data.total === 1 ? '' : 's'} match <span className="font-mono">"{debouncedSearch}"</span>.</>}
+            {debouncedSearch
+              ? <>{data.total} submission{data.total === 1 ? '' : 's'} match <span className="font-mono">"{debouncedSearch}"</span>.</>
+              : <>{data.total} submission{data.total === 1 ? '' : 's'} total.</>}
+          </p>
+        )}
+        {debouncedSearch && !loading && data.total === 0 && (
+          <p className="mt-3 text-xs text-cocoa">
+            No submissions match <span className="font-mono">"{debouncedSearch}"</span>.
           </p>
         )}
 
         <div className="mt-6 overflow-x-auto">
           {loading ? (
             <p className="text-sm text-cocoa">Loading…</p>
-          ) : filtered.length === 0 ? (
+          ) : data.submissions.length === 0 ? (
             <p className="text-sm text-cocoa">{debouncedSearch ? 'No matches.' : 'No submissions found.'}</p>
           ) : (
             <table className="w-full text-sm">
@@ -140,7 +167,7 @@ export default function AdminSubmissions() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-beige/40">
-                {filtered.map((s) => (
+                {data.submissions.map((s) => (
                   <tr key={s.id} className="text-charcoal">
                     <td className="py-3 pr-4 font-mono text-xs text-cocoa">{s.id}</td>
                     <td className="py-3 pr-4">
@@ -164,6 +191,41 @@ export default function AdminSubmissions() {
             </table>
           )}
         </div>
+
+        {!loading && data.total > pageSize && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-beige/40 pt-4">
+            <div className="flex items-center gap-2 text-sm text-cocoa">
+              <span>Rows per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => changePageSize(Number(e.target.value))}
+                className="rounded-lg border border-beige bg-white/70 px-2 py-1 text-sm text-charcoal outline-none focus:border-coral focus:ring-2 focus:ring-coral/20"
+              >
+                {PAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-cocoa">
+                {firstRow}–{lastRow} of {data.total}
+              </span>
+              <button
+                onClick={() => goToPage(page - 1)}
+                disabled={page === 1}
+                className="rounded-full border border-charcoal/30 bg-white/70 px-3 py-1.5 text-sm font-semibold text-charcoal transition-colors hover:border-coral hover:text-coral disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ← Prev
+              </button>
+              <span className="text-sm text-cocoa">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => goToPage(page + 1)}
+                disabled={page >= totalPages}
+                className="rounded-full border border-charcoal/30 bg-white/70 px-3 py-1.5 text-sm font-semibold text-charcoal transition-colors hover:border-coral hover:text-coral disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
     </>
   );

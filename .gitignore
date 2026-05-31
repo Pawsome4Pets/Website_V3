@@ -21,3 +21,6 @@ server/uploads/
 # Local Prisma SQLite dev DB
 server/prisma/dev.db
 server/prisma/dev.db-journal
+
+.vercel
+.env*
