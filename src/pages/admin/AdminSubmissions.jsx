@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import SEO from '../../components/SEO';
 import PageHeader from '../../components/admin/PageHeader';
@@ -20,19 +20,20 @@ export default function AdminSubmissions() {
   const [data, setData] = useState({ submissions: [], total: 0 });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(initialSearch);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [exporting, setExporting] = useState(false);
+  const selectAllRef = useRef(null);
 
   useEffect(() => {
     apiFetch('/admin/forms').then((d) => setForms(d.forms)).catch(() => {});
   }, []);
 
-  // Debounce the search input so each keystroke doesn't hit the server.
   const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => clearTimeout(t);
   }, [search]);
 
-  // Sync search to URL and reset to page 1 whenever the term changes.
   useEffect(() => {
     const next = new URLSearchParams(params);
     if (debouncedSearch) next.set('q', debouncedSearch); else next.delete('q');
@@ -67,6 +68,35 @@ export default function AdminSubmissions() {
     setParams(next);
   };
 
+  // ── Checkbox selection ───────────────────────────────────────────────────────
+  const pageIds = data.submissions.map((s) => s.id);
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+  const somePageSelected = pageIds.some((id) => selectedIds.has(id));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = somePageSelected && !allPageSelected;
+    }
+  }, [somePageSelected, allPageSelected]);
+
+  const toggleRow = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) { pageIds.forEach((id) => next.delete(id)); }
+      else { pageIds.forEach((id) => next.add(id)); }
+      return next;
+    });
+  };
+
+  // ── Downloads ────────────────────────────────────────────────────────────────
   const download = (path, filename, errLabel) => {
     fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } })
       .then((r) => r.ok ? r.blob() : r.json().then((j) => { throw new Error(j.error || `${errLabel} failed`); }))
@@ -88,6 +118,26 @@ export default function AdminSubmissions() {
   const exportPdf = () => {
     if (!formId) { alert('Pick a specific form to export.'); return; }
     download(`/api/exports/forms/${formId}/submissions.pdf`, `submissions-form-${formId}.pdf`, 'PDF export');
+  };
+
+  const exportSelected = () => {
+    if (selectedIds.size === 0) return;
+    setExporting(true);
+    fetch('/api/exports/submissions/bundle.pdf', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [...selectedIds] }),
+    })
+      .then((r) => r.ok ? r.blob() : r.json().then((j) => { throw new Error(j.error || 'Export failed'); }))
+      .then((blob) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'selected-submissions.pdf';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch((e) => alert(e.message))
+      .finally(() => setExporting(false));
   };
 
   const firstRow = (page - 1) * pageSize + 1;
@@ -134,6 +184,15 @@ export default function AdminSubmissions() {
           >
             Export PDF
           </button>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={exportSelected}
+              disabled={exporting}
+              className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-coral/85 disabled:cursor-not-allowed disabled:opacity-75"
+            >
+              {exporting ? 'Exporting…' : `Export ${selectedIds.size} selected (PDF)`}
+            </button>
+          )}
         </div>
 
         {!loading && data.total > 0 && (
@@ -141,6 +200,10 @@ export default function AdminSubmissions() {
             {debouncedSearch
               ? <>{data.total} submission{data.total === 1 ? '' : 's'} match <span className="font-mono">"{debouncedSearch}"</span>.</>
               : <>{data.total} submission{data.total === 1 ? '' : 's'} total.</>}
+            {selectedIds.size > 0 && (
+              <> · <span className="font-semibold text-coral">{selectedIds.size} selected</span>
+              {' '}<button onClick={() => setSelectedIds(new Set())} className="underline hover:text-coral">clear</button></>
+            )}
           </p>
         )}
         {debouncedSearch && !loading && data.total === 0 && (
@@ -158,6 +221,16 @@ export default function AdminSubmissions() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wider text-cocoa">
+                  <th className="w-8 py-2 pr-3">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      checked={allPageSelected}
+                      onChange={toggleAll}
+                      className="h-4 w-4 cursor-pointer rounded accent-coral"
+                      title="Select all on this page"
+                    />
+                  </th>
                   <th className="py-2 pr-4">#</th>
                   <th className="py-2 pr-4">Form</th>
                   <th className="py-2 pr-4">User</th>
@@ -168,7 +241,15 @@ export default function AdminSubmissions() {
               </thead>
               <tbody className="divide-y divide-beige/40">
                 {data.submissions.map((s) => (
-                  <tr key={s.id} className="text-charcoal">
+                  <tr key={s.id} className={`text-charcoal transition-colors ${selectedIds.has(s.id) ? 'bg-coral/5' : ''}`}>
+                    <td className="py-3 pr-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(s.id)}
+                        onChange={() => toggleRow(s.id)}
+                        className="h-4 w-4 cursor-pointer rounded accent-coral"
+                      />
+                    </td>
                     <td className="py-3 pr-4 font-mono text-xs text-cocoa">{s.id}</td>
                     <td className="py-3 pr-4">
                       <Link to={`/admin/submissions/${s.id}`} className="font-medium hover:text-coral">{s.form?.title}</Link>
