@@ -251,9 +251,13 @@ const t0 = Date.now();
 
 for (let off = 0; off < finalRows.length; off += CHUNK) {
   const slice = finalRows.slice(off, off + CHUNK);
-  const subValues = slice.map(() => [form.id, 'submitted', null, TAG]);
+  // updated_at is @updatedAt in Prisma (no MySQL DEFAULT). If we leave it
+  // out of the INSERT, the column ends up NULL and Prisma blows up trying
+  // to deserialize it on every /admin/* page. Set it explicitly to NOW
+  // to match what Prisma writes on a normal create.
+  const subValues = slice.map(() => [form.id, 'submitted', null, TAG, new Date(), new Date()]);
   const [subResult] = await conn.query(
-    `INSERT INTO form_submissions (form_id, status, ip_address, user_agent) VALUES ?`,
+    `INSERT INTO form_submissions (form_id, status, ip_address, user_agent, created_at, updated_at) VALUES ?`,
     [subValues],
   );
   const firstSubId = subResult.insertId;
