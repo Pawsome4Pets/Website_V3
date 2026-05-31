@@ -117,11 +117,16 @@ export default function AdminSubmissionDetail() {
                 if (f.type === 'repeater') {
                   return <RepeaterAnswer key={f.id} field={f} value={answerMap.get(f.id)} />;
                 }
+                const raw = answerMap.get(f.id);
+                const fileMeta = parseFileAnswer(raw);
+                if (fileMeta) {
+                  return <FileAnswer key={f.id} field={f} file={fileMeta} />;
+                }
                 return (
                   <div key={f.id}>
                     <dt className="text-xs uppercase tracking-widest text-cocoa">{f.label}</dt>
                     <dd className="mt-1 text-sm text-charcoal break-words whitespace-pre-wrap">
-                      {answerMap.get(f.id) || <span className="text-cocoa">—</span>}
+                      {raw || <span className="text-cocoa">—</span>}
                     </dd>
                   </div>
                 );
@@ -217,6 +222,62 @@ export default function AdminSubmissionDetail() {
         </aside>
       </div>
     </>
+  );
+}
+
+// Parse a SubmissionAnswer.value that came from a file upload field. The
+// public submit endpoint stores file references as JSON ({id, originalName,
+// mimeType, sizeBytes}) — sometimes as an array of those for multi-file
+// fields. Returns an array of file metas, or null if the value isn't a
+// file reference.
+function parseFileAnswer(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  let parsed;
+  try { parsed = JSON.parse(trimmed); } catch { return null; }
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const files = list.filter((f) => f && typeof f === 'object' && Number.isInteger(f.id) && typeof f.originalName === 'string');
+  return files.length ? files : null;
+}
+
+function FileAnswer({ field, file: files }) {
+  return (
+    <div className="sm:col-span-2">
+      <dt className="text-xs uppercase tracking-widest text-cocoa">{field.label}</dt>
+      <dd className="mt-2 flex flex-wrap gap-3">
+        {files.map((f) => {
+          const isImage = (f.mimeType || '').startsWith('image/');
+          const href = `/api/uploads/${f.id}`;
+          return (
+            <a
+              key={f.id}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 rounded-xl bg-cream/60 px-3 py-2 ring-1 ring-beige/40 transition-colors hover:ring-coral"
+            >
+              {isImage ? (
+                <img
+                  src={href}
+                  alt={f.originalName}
+                  loading="lazy"
+                  className="h-16 w-16 rounded-lg object-cover ring-1 ring-beige/60"
+                />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-lg bg-beige/40 text-[10px] font-semibold uppercase tracking-widest text-cocoa">
+                  {(f.mimeType || '').split('/')[1]?.slice(0, 4) || 'FILE'}
+                </div>
+              )}
+              <div className="min-w-0 max-w-[200px]">
+                <p className="truncate text-sm font-medium text-charcoal">{f.originalName}</p>
+                <p className="text-xs text-cocoa">{(f.sizeBytes / 1024).toFixed(1)} KB</p>
+              </div>
+            </a>
+          );
+        })}
+      </dd>
+    </div>
   );
 }
 
