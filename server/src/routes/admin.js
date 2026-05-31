@@ -30,8 +30,8 @@ router.get('/stats', async (_req, res, next) => {
     ]);
 
     const recentSubmissions = await prisma.formSubmission.findMany({
-      take: 5,
-      orderBy: { createdAt: 'desc' },
+      take: 10,
+      orderBy: [{ status: 'desc' }, { createdAt: 'desc' }],
       include: { form: { select: { title: true, slug: true } } },
     });
 
@@ -534,6 +534,18 @@ router.put('/forms/:id/fields',
 );
 
 // ── Submissions ──────────────────────────────────────────────────────────────
+// Mark all currently-submitted submissions as reviewed (dashboard "Clear" action)
+router.post('/submissions/mark-all-reviewed', async (req, res, next) => {
+  try {
+    const result = await prisma.formSubmission.updateMany({
+      where: { status: 'submitted' },
+      data: { status: 'reviewed' },
+    });
+    await logActivity({ adminId: req.auth.sub, action: 'submission.bulk.mark_reviewed', metadata: { count: result.count }, ipAddress: req.ip });
+    res.json({ ok: true, count: result.count });
+  } catch (err) { next(err); }
+});
+
 router.get('/submissions',
   query('formId').optional().isInt(),
   query('limit').optional().isInt({ min: 1, max: 200 }),
@@ -569,7 +581,7 @@ router.get('/submissions',
       const [submissions, total] = await Promise.all([
         prisma.formSubmission.findMany({
           where, take, skip,
-          orderBy: { createdAt: 'desc' },
+          orderBy: [{ status: 'desc' }, { createdAt: 'desc' }],
           include: {
             form: { select: { id: true, title: true, slug: true } },
             user: { select: { id: true, email: true, name: true } },
